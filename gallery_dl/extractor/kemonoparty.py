@@ -296,8 +296,13 @@ class KemonopartyUserExtractor(KemonopartyExtractor):
     def posts(self):
         _, _, service, creator_id, query = self.groups
         params = text.parse_query(query)
-        return self.api.creator_posts(
-            service, creator_id, params.get("o"), params.get("q"))
+        if params.get("tag"):
+            posts = self.api.creator_posts_tags(
+                    service, creator_id, params.get("tag"))
+            return posts["results"]
+        else:
+            return self.api.creator_posts(
+                service, creator_id, params.get("o"), params.get("q"))
 
 
 class KemonopartyPostsExtractor(KemonopartyExtractor):
@@ -500,6 +505,11 @@ class KemonoAPI():
         endpoint = "/{}/user/{}".format(service, creator_id)
         params = {"q": query, "o": offset}
         return self._pagination(endpoint, params, 50)
+
+    def creator_posts_tags(self, service, creator_id, tags=None):
+        endpoint = "/{}/user/{}/posts-legacy".format(service, creator_id)
+        params = {"tag": tags}
+        return self._call(endpoint, params)
 
     def creator_announcements(self, service, creator_id):
         endpoint = "/{}/user/{}/announcements".format(service, creator_id)
