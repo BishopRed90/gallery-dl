@@ -582,3 +582,4 @@ class KemonoAPI():
                 return
 
             params["o"] += batch
+
