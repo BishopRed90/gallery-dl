@@ -20,6 +20,7 @@ class Shimmie2Extractor(BaseExtractor):
 
     def _init(self):
         cookies = self.config_instance("cookies")
+
         if cookies:
             domain = self.root.rpartition("/")[2]
             self.cookies_update_dict(cookies, domain=domain)
@@ -182,6 +183,7 @@ class Shimmie2TagExtractor(Shimmie2Extractor):
                     "id"      : pid,
                     "md5"     : "",
                     "tags"    : tags,
+                    "title"   : '',
                     "width"   : width,
                     "height"  : height,
                     "size"    : text.parse_bytes(size[:-1]),
@@ -231,9 +233,11 @@ class Shimmie2PostExtractor(Shimmie2Extractor):
         return ({
             "id"      : post_id,
             "tags"    : extr(": ", "<").partition(" - ")[0].rstrip(")"),
+            "title"   : "",
+            "source"  : extr("Source: (<a href='", "'"),
             "md5"     : "",
             "file_url": self.root + extr("id='main_image' src='.", "'"),
             "width"   : extr("orig_width =", ";"),
             "height"  : 0,
-            "size"    : 0,
+            "size"    : 0
         },)
