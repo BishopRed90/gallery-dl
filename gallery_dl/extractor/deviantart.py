@@ -7,6 +7,7 @@
 # published by the Free Software Foundation.
 
 """Extractors for https://www.deviantart.com/"""
+import dataclasses
 
 from .common import Extractor, Message
 from .. import text, util, exception
@@ -23,6 +24,27 @@ BASE_PATTERN = (
     r"(?!www\.)([\w-]+)\.(?:fx)?deviantart\.com)"
 )
 DEFAULT_AVATAR = "https://a.deviantart.net/avatars/default.gif"
+
+@dataclasses.dataclass
+class Deviation(object):
+    """Represents a single deviation"""
+    # Core properties
+    id: int
+    uuid: str
+    title: str
+    author: dict
+    page_url: str
+    content: dict
+    # Checks
+    blocked: bool
+    deleted: bool
+    downloadable: bool
+    favorite: bool
+    mature: bool
+    original: bool
+    preview: bool
+    published: bool
+    premium: bool
 
 
 class DeviantartExtractor(Extractor):
@@ -51,8 +73,9 @@ class DeviantartExtractor(Extractor):
         self.comments_avatars = self.config("comments-avatars", False)
         self.comments = self.comments_avatars or self.config("comments", False)
 
-        self.api = DeviantartOAuthAPI(self)
-        self.eclipse_api = None
+        self.oauth_api = DeviantartOAuthAPI(self)
+        self.eclipse_api = DeviantartEclipseAPI(self)
+        self.api = self.eclipse_api # TODO - Need to check config to see if should be oauth
         self.group = False
         self._premium_cache = {}
 
@@ -114,6 +137,200 @@ class DeviantartExtractor(Extractor):
             self.cookies_update(_login_impl(self, username, password))
             return True
 
+    def _oauth_deviation(self, deviation):
+
+        if deviation["is_deleted"]:
+            # prevent crashing in case the deviation really is
+            # deleted
+            self.log.debug(
+                "Skipping %s (deleted)", deviation["deviationid"])
+            return
+
+        tier_access = deviation.get("tier_access")
+        if tier_access == "locked":
+            self.log.debug(
+                "Skipping %s (access locked)", deviation["deviationid"])
+            return
+
+        if "premium_folder_data" in deviation:
+            data = self._fetch_premium(deviation)
+            if not data:
+                return
+            deviation.update(data)
+
+        self.prepare(deviation)
+        yield Message.Directory, deviation
+
+        if "content" in deviation:
+            content = self._extract_content(deviation)
+            yield self.commit(deviation, content)
+
+        elif deviation["is_downloadable"]:
+            content = self.api.deviation_download(deviation["deviationid"])
+            deviation["is_original"] = True
+            yield self.commit(deviation, content)
+
+        if "videos" in deviation and deviation["videos"]:
+            video = max(deviation["videos"],
+                        key=lambda x: text.parse_int(x["quality"][:-1]))
+            deviation["is_original"] = False
+            yield self.commit(deviation, video)
+
+        if "flash" in deviation:
+            deviation["is_original"] = True
+            yield self.commit(deviation, deviation["flash"])
+
+        if self.commit_journal:
+            journal = self._extract_journal(deviation)
+            if journal:
+                if self.extra:
+                    deviation["_journal"] = journal["html"]
+                deviation["is_original"] = True
+                yield self.commit_journal(deviation, journal)
+
+        if self.comments_avatars:
+            for comment in deviation["comments"]:
+                user = comment["user"]
+                name = user["username"].lower()
+                if user["usericon"] == DEFAULT_AVATAR:
+                    self.log.debug(
+                        "Skipping avatar of '%s' (default)", name)
+                    continue
+                _user_details.update(name, user)
+
+                url = "{}/{}/avatar/".format(self.root, name)
+                comment["_extractor"] = DeviantartAvatarExtractor
+                yield Message.Queue, url, comment
+
+        if self.previews and "preview" in deviation:
+            preview = deviation["preview"]
+            deviation["is_preview"] = True
+            if self.previews_images:
+                yield self.commit(deviation, preview)
+            else:
+                mtype = mimetypes.guess_type(
+                    "a." + deviation["extension"], False)[0]
+                if mtype and not mtype.startswith("image/"):
+                    yield self.commit(deviation, preview)
+            del deviation["is_preview"]
+
+        if not self.extra:
+            return
+
+        # ref: https://www.deviantart.com
+        #      /developers/http/v1/20210526/object/editor_text
+        # the value of "features" is a JSON string with forward
+        # slashes escaped
+        text_content = \
+            deviation["text_content"]["body"]["features"].replace(
+                "\\/", "/") if "text_content" in deviation else None
+        for txt in (text_content, deviation.get("description"),
+                    deviation.get("_journal")):
+            if txt is None:
+                continue
+            for match in DeviantartStashExtractor.pattern.finditer(txt):
+                url = text.ensure_http_scheme(match.group(0))
+                deviation["_extractor"] = DeviantartStashExtractor
+                yield Message.Queue, url, deviation
+
+    def _eclipse_deviation(self, deviation):
+
+        if deviation["isDeleted"]:
+            # prevent crashing in case the deviation really is
+            # deleted
+            self.log.debug(
+                "Skipping %s (deleted)", deviation["deviationid"])
+            return
+
+        if deviation.get('tierAccess') == "locked":
+            self.log.debug(
+                "Skipping %s (access locked)", deviation["deviationid"])
+            return
+
+        if deviation.get("pcp"):
+            data = self._fetch_premium(deviation)
+            if not data:
+                return
+            deviation.update(data)
+
+        self.prepare(deviation)
+        yield Message.Directory, deviation
+
+
+        if deviation["isDownloadable"]:
+            content = self.oauth_api.deviation_download(deviation["uuid"])
+            deviation["is_original"] = True
+            yield self.commit(deviation, content)
+        elif deviation["media"]:
+            content = self._extract_media(deviation)
+            yield self.commit(deviation, content)
+        elif "content" in deviation:
+            content = self._extract_content(deviation)
+            yield self.commit(deviation, content)
+
+        if "videos" in deviation and deviation["videos"]:
+            video = max(deviation["videos"],
+                        key=lambda x: text.parse_int(x["quality"][:-1]))
+            deviation["is_original"] = False
+            yield self.commit(deviation, video)
+
+        if "flash" in deviation:
+            deviation["is_original"] = True
+            yield self.commit(deviation, deviation["flash"])
+
+        if self.commit_journal:
+            journal = self._extract_journal(deviation)
+            if journal:
+                if self.extra:
+                    deviation["_journal"] = journal["html"]
+                deviation["is_original"] = True
+                yield self.commit_journal(deviation, journal)
+
+        if self.comments_avatars:
+            for comment in deviation["comments"]:
+                user = comment["user"]
+                name = user["username"].lower()
+                if user["usericon"] == DEFAULT_AVATAR:
+                    self.log.debug(
+                        "Skipping avatar of '%s' (default)", name)
+                    continue
+                _user_details.update(name, user)
+
+                url = "{}/{}/avatar/".format(self.root, name)
+                comment["_extractor"] = DeviantartAvatarExtractor
+                yield Message.Queue, url, comment
+
+        if self.previews and "preview" in deviation:
+            preview = deviation["preview"]
+            deviation["is_preview"] = True
+            if self.previews_images:
+                yield self.commit(deviation, preview)
+            else:
+                mtype = mimetypes.guess_type(
+                    "a." + deviation["extension"], False)[0]
+                if mtype and not mtype.startswith("image/"):
+                    yield self.commit(deviation, preview)
+            del deviation["is_preview"]
+
+        if not self.extra:
+            return
+
+        # ref: https://www.deviantart.com
+        #      /developers/http/v1/20210526/object/editor_text
+        # the value of "features" is a JSON string with forward
+        # slashes escaped
+        text_content = \
+            deviation["text_content"]["body"]["features"].replace(
+                "\\/", "/") if "text_content" in deviation else None
+        for txt in (text_content, deviation.get("description"),
+                    deviation.get("_journal")):
+            if txt is None:
+                continue
+            for match in DeviantartStashExtractor.pattern.finditer(txt):
+                url = text.ensure_http_scheme(match.group(0))
+                deviation["_extractor"] = DeviantartStashExtractor
+                yield Message.Queue, url, deviation
+
     def items(self):
         if self.user:
             group = self.config("group", True)
@@ -135,99 +352,10 @@ class DeviantartExtractor(Extractor):
                 yield Message.Queue, url, data
                 continue
 
-            if deviation["is_deleted"]:
-                # prevent crashing in case the deviation really is
-                # deleted
-                self.log.debug(
-                    "Skipping %s (deleted)", deviation["deviationid"])
-                continue
-
-            tier_access = deviation.get("tier_access")
-            if tier_access == "locked":
-                self.log.debug(
-                    "Skipping %s (access locked)", deviation["deviationid"])
-                continue
-
-            if "premium_folder_data" in deviation:
-                data = self._fetch_premium(deviation)
-                if not data:
-                    continue
-                deviation.update(data)
-
-            self.prepare(deviation)
-            yield Message.Directory, deviation
-
-            if "content" in deviation:
-                content = self._extract_content(deviation)
-                yield self.commit(deviation, content)
-
-            elif deviation["is_downloadable"]:
-                content = self.api.deviation_download(deviation["deviationid"])
-                deviation["is_original"] = True
-                yield self.commit(deviation, content)
-
-            if "videos" in deviation and deviation["videos"]:
-                video = max(deviation["videos"],
-                            key=lambda x: text.parse_int(x["quality"][:-1]))
-                deviation["is_original"] = False
-                yield self.commit(deviation, video)
-
-            if "flash" in deviation:
-                deviation["is_original"] = True
-                yield self.commit(deviation, deviation["flash"])
-
-            if self.commit_journal:
-                journal = self._extract_journal(deviation)
-                if journal:
-                    if self.extra:
-                        deviation["_journal"] = journal["html"]
-                    deviation["is_original"] = True
-                    yield self.commit_journal(deviation, journal)
-
-            if self.comments_avatars:
-                for comment in deviation["comments"]:
-                    user = comment["user"]
-                    name = user["username"].lower()
-                    if user["usericon"] == DEFAULT_AVATAR:
-                        self.log.debug(
-                            "Skipping avatar of '%s' (default)", name)
-                        continue
-                    _user_details.update(name, user)
-
-                    url = "{}/{}/avatar/".format(self.root, name)
-                    comment["_extractor"] = DeviantartAvatarExtractor
-                    yield Message.Queue, url, comment
-
-            if self.previews and "preview" in deviation:
-                preview = deviation["preview"]
-                deviation["is_preview"] = True
-                if self.previews_images:
-                    yield self.commit(deviation, preview)
-                else:
-                    mtype = mimetypes.guess_type(
-                        "a." + deviation["extension"], False)[0]
-                    if mtype and not mtype.startswith("image/"):
-                        yield self.commit(deviation, preview)
-                del deviation["is_preview"]
-
-            if not self.extra:
-                continue
-
-            # ref: https://www.deviantart.com
-            #      /developers/http/v1/20210526/object/editor_text
-            # the value of "features" is a JSON string with forward
-            # slashes escaped
-            text_content = \
-                deviation["text_content"]["body"]["features"].replace(
-                    "\\/", "/") if "text_content" in deviation else None
-            for txt in (text_content, deviation.get("description"),
-                        deviation.get("_journal")):
-                if txt is None:
-                    continue
-                for match in DeviantartStashExtractor.pattern.finditer(txt):
-                    url = text.ensure_http_scheme(match.group(0))
-                    deviation["_extractor"] = DeviantartStashExtractor
-                    yield Message.Queue, url, deviation
+            if isinstance(deviation['_api'], DeviantartEclipseAPI):
+                yield from self._eclipse_deviation(deviation)
+            elif isinstance(deviation['_api'], DeviantartOAuthAPI):
+                yield from self._oauth_item(deviation)
 
     def deviations(self):
         """Return an iterable containing all relevant Deviation-objects"""
@@ -260,7 +388,7 @@ class DeviantartExtractor(Extractor):
             deviation["_username"] = deviation["username"].lower()
 
         deviation["published_time"] = text.parse_int(
-            deviation["published_time"])
+            deviation.get("published_time", deviation.get("publishedTime")))
         deviation["date"] = text.parse_timestamp(
             deviation["published_time"])
 
@@ -679,6 +807,24 @@ x2="45.4107524%" y2="71.4898596%" id="app-root-3">\
 
         return content
 
+    def _extract_media(self, deviation):
+        content = deviation["media"]
+
+        if content["baseUri"].startswith("https://images-wixmp-"):
+            if self.intermediary and deviation["index"] <= 790677560:
+                # https://github.com/r888888888/danbooru/issues/4069
+                intermediary, count = re.subn(
+                    r"(/f/[^/]+/[^/]+)/v\d+/.*",
+                    r"/intermediary\1", content["src"], 1)
+                if count:
+                    deviation["is_original"] = False
+                    deviation["_fallback"] = (content["src"],)
+                    content["src"] = intermediary
+            if self.quality:
+                content["src"] = self.quality_sub(
+                    self.quality, content["src"], 1)
+
+        return content
     @staticmethod
     def _find_folder(folders, name, uuid):
         if uuid.isdecimal():
@@ -687,7 +833,7 @@ x2="45.4107524%" y2="71.4898596%" id="app-root-3">\
             for folder in folders:
                 if match(folder["name"]):
                     return folder
-                elif folder.get("has_subfolders"):
+                elif folder["has_subfolders"]:
                     for subfolder in folder["subfolders"]:
                         if match(subfolder["name"]):
                             return subfolder
@@ -695,7 +841,7 @@ x2="45.4107524%" y2="71.4898596%" id="app-root-3">\
             for folder in folders:
                 if folder["folderid"] == uuid:
                     return folder
-                elif folder.get("has_subfolders"):
+                elif folder["has_subfolders"]:
                     for subfolder in folder["subfolders"]:
                         if subfolder["folderid"] == uuid:
                             return subfolder
@@ -866,11 +1012,6 @@ x2="45.4107524%" y2="71.4898596%" id="app-root-3">\
                 "journal" if deviation["isJournal"] else "art",
             )["deviation"]["extended"]["deviationUuid"]
             yield self.api.deviation(deviation_uuid)
-
-    def _unescape_json(self, json):
-        return json.replace('\\"', '"') \
-                   .replace("\\'", "'") \
-                   .replace("\\\\", "\\")
 
 
 class DeviantartUserExtractor(DeviantartExtractor):
@@ -1051,7 +1192,7 @@ class DeviantartStashExtractor(DeviantartExtractor):
         DeviantartExtractor.__init__(self, match)
         self.user = None
 
-    def deviations(self, stash_id=None, stash_data=None):
+    def deviations(self, stash_id=None):
         if stash_id is None:
             legacy_url, stash_id = self.groups
         else:
@@ -1073,33 +1214,14 @@ class DeviantartStashExtractor(DeviantartExtractor):
                 deviation["_page"] = page
                 deviation["index"] = text.parse_int(text.extr(
                     page, '\\"deviationId\\":', ','))
-
-                deviation["stash_id"] = stash_id
-                if stash_data:
-                    folder = stash_data["folder"]
-                    deviation["stash_name"] = folder["name"]
-                    deviation["stash_folder"] = folder["folderId"]
-                    deviation["stash_parent"] = folder["parentId"] or 0
-                    deviation["stash_description"] = \
-                        folder["richDescription"]["excerpt"]
-                else:
-                    deviation["stash_name"] = ""
-                    deviation["stash_description"] = ""
-                    deviation["stash_folder"] = 0
-                    deviation["stash_parent"] = 0
-
                 yield deviation
                 return
-
-        stash_data = text.extr(page, ',\\"stash\\":', ',\\"@@')
-        if stash_data:
-            stash_data = util.json_loads(self._unescape_json(stash_data))
 
         for sid in text.extract_iter(
                 page, 'href="https://www.deviantart.com/stash/', '"'):
             if sid == stash_id or sid.endswith("#comments"):
                 continue
-            yield from self.deviations(sid, stash_data)
+            yield from self.deviations(sid)
 
 
 class DeviantartFavoriteExtractor(DeviantartExtractor):
@@ -1287,45 +1409,38 @@ class DeviantartDeviationExtractor(DeviantartExtractor):
             match.group(4) or match.group(5) or id_from_base36(match.group(6))
 
     def deviations(self):
-        if self.user:
-            url = "{}/{}/{}/{}".format(
-                self.root, self.user, self.type or "art", self.deviation_id)
+        if self.config("api") == "eclipse" or isinstance(self.api, DeviantartEclipseAPI):
+            _deviation_info = self.eclipse_api.deviation_extended_fetch(self.deviation_id, self.user, self.type)
+            deviation = _deviation_info["deviation"]
+            deviation["comments"] = _deviation_info["comments"]
+            deviation['uuid'] = _deviation_info["deviation"]["extended"].get("deviationUuid")
+            if deviation.get('isMultiImage'):
+                additional_media = _deviation_info["deviation"]["extended"].get("additionalMedia")
+                self.filename_fmt = ("{category}_{index}_{index_file}_{title}_"
+                                     "{num:>02}.{extension}")
+                self.archive_fmt = ("g_{_username}_{index}{index_file:?_//}."
+                                            "{extension}")
+            else:
+                additional_media = []
+
+            deviation["index_file"] = 0
+            deviation["count"] = 1 + len(additional_media)
+            deviation["num"] = 1
+            deviation['_api'] = self.eclipse_api
+            yield deviation
+
+            for index, post in enumerate(additional_media):
+                uri = post["media"]["baseUri"].encode().decode("unicode-escape")
+                deviation["content"]["src"] = uri
+                deviation["num"] += 1
+                deviation["index_file"] = post["fileId"]
+                # Download only works on purchased materials - no way to check
+                deviation["is_downloadable"] = False
+                yield deviation
+        elif self.config("api") == "oauth":
+            pass
         else:
-            url = "{}/view/{}/".format(self.root, self.deviation_id)
-
-        page = self._limited_request(url, notfound="deviation").text
-        uuid = text.extr(page, '"deviationUuid\\":\\"', '\\')
-        if not uuid:
-            raise exception.NotFoundError("deviation")
-
-        deviation = self.api.deviation(uuid)
-        deviation["_page"] = page
-        deviation["index_file"] = 0
-        deviation["num"] = deviation["count"] = 1
-
-        additional_media = text.extr(page, ',\\"additionalMedia\\":', '}],\\"')
-        if not additional_media:
-            yield deviation
-            return
-
-        self.filename_fmt = ("{category}_{index}_{index_file}_{title}_"
-                             "{num:>02}.{extension}")
-        self.archive_fmt = ("g_{_username}_{index}{index_file:?_//}."
-                            "{extension}")
-
-        additional_media = util.json_loads(self._unescape_json(
-            additional_media) + "}]")
-        deviation["count"] = 1 + len(additional_media)
-        yield deviation
-
-        for index, post in enumerate(additional_media):
-            uri = self._eclipse_media(post["media"], "fullview")[0]
-            deviation["content"]["src"] = uri
-            deviation["num"] += 1
-            deviation["index_file"] = post["fileId"]
-            # Download only works on purchased materials - no way to check
-            deviation["is_downloadable"] = False
-            yield deviation
+            raise Exception("Invalid API selected")
 
 
 class DeviantartScrapsExtractor(DeviantartExtractor):
@@ -1973,6 +2088,14 @@ class DeviantartEclipseAPI():
         self.request = self.extractor._limited_request
         self.csrf_token = None
 
+    def subscription(self, tier_deviation_id):
+        endpoint = "/_puppy/dashared/tier/content"
+        params = {
+            "tier_deviationid": tier_deviation_id,
+            "da_minor_version": "20230710",
+        }
+        pass
+
     def deviation_extended_fetch(self, deviation_id, user, kind=None):
         endpoint = "/_puppy/dadeviation/init"
         params = {
@@ -2095,6 +2218,15 @@ class DeviantartEclipseAPI():
         self.csrf_token = token = text.extr(
             page, "window.__CSRF_TOKEN__ = '", "'")
         return token
+
+    def parse_deviation(self, raw_deviation):
+        deviation = Deviation(
+            raw_deviation['deviationId'],
+            raw_deviation['title'],
+            raw_deviation
+        )
+
+
 
 
 @memcache(keyarg=1)
