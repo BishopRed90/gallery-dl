@@ -42,14 +42,30 @@ class SubscribestarExtractor(Extractor):
             data = self._data_from_post(post_html)
             data["title"] = text.unescape(text.extr(
                 data["content"], "<h1>", "</h1>"))
+            data["count"] = len(media)
             yield Message.Directory, data
             for num, item in enumerate(media, 1):
                 item.update(data)
                 item["num"] = num
                 text.nameext_from_url(item.get("name") or item["url"], item)
+                if item["original_filename"] and not item["extension"]:
+                    item["extension"] = item["original_filename"].split(".")[-1]
+                    item["original_filename"] = ".".join(item["original_filename"].split(".")[:-1])
+
                 if item["url"][0] == "/":
                     item["url"] = self.root + item["url"]
                 yield Message.Url, item["url"], item
+
+            journals = self.config("posts", "text")
+            if journals == "text":
+                self.commit_journal = self._commit_journal_text
+            elif journals == "html":
+                self.commit_journal = self._commit_journal_html
+            else:
+                self.commit_journal = None
+
+            if self.commit_journal:
+                yield self.commit_journal(data)
 
     def posts(self):
         """Yield HTML content of all relevant posts"""
@@ -204,6 +220,34 @@ class SubscribestarExtractor(Extractor):
         self.log.warning("Preview image detected")
         self._warn_preview = util.noop
 
+    def _commit_journal_text(self, post):
+        content = post["content"]
+        if not content:
+            self.log.warning("%s: Empty post content", post["index"])
+            return None
+        elif content.startswith("<div>") or content.startswith("<p>"):
+            content = "\n".join(
+                text.remove_html(txt)
+                for txt in content.split("</div>")
+            )
+        txt = JOURNAL_TEMPLATE_TEXT.format(
+            title=post["title"],
+            username=post["author_nick"],
+            date=post["date"],
+            content=content,
+        )
+
+        post["extension"] = "txt"
+        return Message.Url, txt, post
+
+    def _commit_journal_html(self, post):
+        content = post["content"]
+        if not content:
+            self.log.warning("%s: Empty post content", post["index"])
+            return None
+        else:
+            post["extension"] = "txt"
+            return Message.Url, content, post
 
 class SubscribestarUserExtractor(SubscribestarExtractor):
     """Extractor for media from a subscribestar user"""
@@ -249,3 +293,9 @@ class SubscribestarPostExtractor(SubscribestarExtractor):
             "author_id"  : text.parse_int(extr('data-user-id="', '"')),
             "author_nick": text.unescape(extr('alt="', '"')),
         }
+
+JOURNAL_TEMPLATE_TEXT = """text:{title}
+by {username}, {date}
+
+{content}
+"""
