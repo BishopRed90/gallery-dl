@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from pydantic import BaseModel, Field, AliasChoices, AliasPath, \
-    computed_field, model_validator, model_serializer
+    computed_field, model_validator, model_serializer, field_validator
 from enum import Enum, auto
 
 ### Supporting Classes
@@ -105,6 +105,14 @@ class Deviation(BaseModel):
     mature: bool = Field(validation_alias=AliasChoices('isMature','is_mature'))
     published: bool = Field(validation_alias=AliasChoices('isPublished','is_published'))
 
+    # @field_validator('media', mode='before')
+    # @classmethod
+    # def _validate_media(cls, value: dict | list[dict]) -> list[dict]:
+    #     if isinstance(value, dict):
+    #         return [value]
+    #     else:
+    #         return value
+
     @model_validator(mode='after')
     def _validate_extended(self):
         if self.id is None:
@@ -120,6 +128,18 @@ class AdditionalMedia(BaseModel):
 class ExtendedDeviation(Deviation):
     """Represents a single deviation with extended properties"""
     description: str | None = Field(validation_alias=AliasChoices(AliasPath('extended', 'descriptionText',"excerpt"), 'description'), default=None)
-    tags: list[Tag] = Field(validation_alias=AliasChoices(AliasPath('extended','tags'), 'tags'))
+    tags: list[Tag] = Field(validation_alias=AliasChoices(AliasPath('extended','tags'), 'tags'), default=[])
     multiImage: bool | None = Field(alias='isMultiImage', default=None)
-    additional_media: list[AdditionalMedia] | None = Field(validation_alias=AliasChoices(AliasPath('extended','additionalMedia'), 'additional_media'), default=None)
+    additional_media: list[AdditionalMedia] = Field(validation_alias=AliasChoices(AliasPath('extended','additionalMedia'), 'additional_media'), default=[])
+    index: int = 1
+
+    @computed_field
+    @property
+    def count(self) -> int:
+        return 1 + len(self.additional_media)
+
+    # @model_validator(mode='after')
+    # def _validate_extended(self):
+    #     if self.multiImage and self.additional_media:
+    #         self.media += self.additional_media
+    #     return self

@@ -311,7 +311,7 @@ class OAuthDeviantart(OAuthBase):
 
     def items(self):
         yield Message.Version, 1
-        from . import deviantart
+        from . import deviantart_old
 
         self._oauth2_authorization_code_grant(
             self.oauth_config("client-id"),
