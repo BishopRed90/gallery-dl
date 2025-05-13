@@ -7,7 +7,7 @@
 # published by the Free Software Foundation.
 
 """Utility classes to setup OAuth and link accounts to gallery-dl"""
-
+from . import deviantart
 from .common import Extractor, Message
 from .. import text, oauth, util, config, exception
 from ..output import stdout_write

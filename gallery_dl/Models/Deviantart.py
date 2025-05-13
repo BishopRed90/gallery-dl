@@ -5,7 +5,13 @@ from pydantic import BaseModel, Field, AliasChoices, AliasPath, \
     computed_field, model_validator, model_serializer, field_validator
 from enum import Enum, auto
 
-### Supporting Classes
+### Supporting Types
+class DeviationTypes(Enum):
+    image = auto()
+    film = auto()
+    journal = auto()
+    pdf = auto()
+
 class Tag(BaseModel):
     name: str = Field(validation_alias=AliasChoices('name','tag_name'))
 
@@ -13,24 +19,61 @@ class Tag(BaseModel):
     def serialize(self):
         return self.name
 
-class DeviationTypes(Enum):
-    image = auto()
-    film = auto()
-    journal = auto()
-    pdf = auto()
+class DeviationMedia(BaseModel):
+    uri: str = Field(validation_alias=AliasChoices('baseUri','src'))
+    token: list[str] | None = Field(default=None)
+    prettyName: str | None = Field(default=None)
+    types: list[dict] | None = Field(default=None, exclude=True)
+    height: int | None = Field(default=None)
+    width: int | None = Field(default=None)
+    transparency: bool | None = Field(default=None)
+    filesize: int | None = Field(default=None)
+    extension: str | None = Field(default=None)
+
+    @computed_field
+    @property
+    def src(self) -> str:
+        if self.token and self.types:
+            base_uri = self.uri
+            token = "?token=" + self.token[0]
+            view = next(view.get('c') for view in self.types if view.get('t') == "fullview")
+            if view:
+                view = view.replace("<prettyName>", self.prettyName)
+                return base_uri + view + token
+            else:
+                return base_uri + token
+        else:
+            return self.uri
+
+class AdditionalMedia(BaseModel):
+    media: DeviationMedia = Field(validation_alias=AliasChoices('media','additional_media'))
 
 #### Sub Classes
+class DeviationPremiumFolder(BaseModel):
+    type: str
+    access: bool = Field(validation_alias=AliasChoices('hasAccess','has_access'))
+    id: int = Field(validation_alias=AliasChoices('galleryId','gallery_id'))
+    url: str = Field(validation_alias=AliasChoices('galleryUrl','gallery_url'))
+    name: str = Field(validation_alias=AliasChoices('galleryName','gallery_name'))
+
+class PremiumContent(BaseModel):
+    purchased: bool = Field(validation_alias=AliasChoices('hasUserPurchased','has_user_purchased'))
+    src: str = Field(alias='url')
+    assets: list[dict]
+    extension: str = "zip"
+
+class Adoptable(BaseModel):
+    id: int = Field(validation_alias=AliasChoices('deviationId','deviation_id'))
+    url: str = Field(validation_alias=AliasChoices('assetSourceUrl','assetSourceUrl'))
+    is_owner: bool = Field(validation_alias=AliasChoices('isCreator','is_creator'))
+    is_creator: bool = Field(validation_alias=AliasChoices('isOwner','is_owner'))
+
 class DeviationStats(BaseModel):
     comments: int
     favorites: int = Field(alias='favourites')
     downloads: int | None = None
     views: int | None = None
     private_collected: int | None = None
-
-class DeviationPremiumFolder(BaseModel):
-    type: str
-    access: bool = Field(validation_alias=AliasChoices('hasAccess','has_access'))
-    id: int = Field(validation_alias=AliasChoices('galleryId','gallery_id'))
 
 class DeviationTier(BaseModel):
     id: int
@@ -57,31 +100,6 @@ class DeviationComments(BaseModel):
     next_offset: int | None = Field(alias="nextOffset")
     comments: list[dict] = Field(alias='thread')
 
-class DeviationMedia(BaseModel):
-    uri: str = Field(validation_alias=AliasChoices('baseUri','src'))
-    token: list[str] | None = Field(default=None)
-    prettyName: str | None = Field(default=None)
-    types: list[dict] | None = Field(default=None, exclude=True)
-    height: int | None = Field(default=None)
-    width: int | None = Field(default=None)
-    transparency: bool | None = Field(default=None)
-    filesize: int | None = Field(default=None)
-
-    @computed_field
-    @property
-    def src(self) -> str:
-        if self.token and self.types:
-            base_uri = self.uri
-            token = "?token=" + self.token[0]
-            view = next(view.get('c') for view in self.types if view.get('t') == "fullview")
-            if view:
-                view = view.replace("<prettyName>", self.prettyName)
-                return base_uri + view + token
-            else:
-                return base_uri + token
-        else:
-            return self.uri
-
 class Deviation(BaseModel):
     """Represents the most core information found for a deviation.
        Every Check here is EclipseAPI -> OAuth Api as it is more verbose.
@@ -94,6 +112,7 @@ class Deviation(BaseModel):
     uuid: UUID = Field(validation_alias=AliasChoices(AliasPath('extended', 'deviationUuid'), 'deviationid'))
     stats: DeviationStats
     title: str
+    tier_access: str = Field(validation_alias=AliasChoices('tierAccess','tier_access'), default="unlocked")
     url: str
 
     # Core Booleans
@@ -105,13 +124,6 @@ class Deviation(BaseModel):
     mature: bool = Field(validation_alias=AliasChoices('isMature','is_mature'))
     published: bool = Field(validation_alias=AliasChoices('isPublished','is_published'))
 
-    # @field_validator('media', mode='before')
-    # @classmethod
-    # def _validate_media(cls, value: dict | list[dict]) -> list[dict]:
-    #     if isinstance(value, dict):
-    #         return [value]
-    #     else:
-    #         return value
 
     @model_validator(mode='after')
     def _validate_extended(self):
@@ -122,24 +134,18 @@ class Deviation(BaseModel):
             self.media.filesize = next(view.get('f') for view in self.media.types if view.get('t') == "fullview")
         return self
 
-class AdditionalMedia(BaseModel):
-    media: DeviationMedia = Field(validation_alias=AliasChoices('media','additional_media'))
-
 class ExtendedDeviation(Deviation):
     """Represents a single deviation with extended properties"""
+    adoptable: Adoptable | None = Field(validation_alias=AliasPath('extended', 'adoptable'), default=None)
     description: str | None = Field(validation_alias=AliasChoices(AliasPath('extended', 'descriptionText',"excerpt"), 'description'), default=None)
     tags: list[Tag] = Field(validation_alias=AliasChoices(AliasPath('extended','tags'), 'tags'), default=[])
     multiImage: bool | None = Field(alias='isMultiImage', default=None)
     additional_media: list[AdditionalMedia] = Field(validation_alias=AliasChoices(AliasPath('extended','additionalMedia'), 'additional_media'), default=[])
     index: int = 1
+    premium_folder_data: DeviationPremiumFolder | None = Field(validation_alias=AliasChoices(AliasPath('extended', 'premiumFolderData'),'premium_folder_data'), default=None)
+    premium_content: PremiumContent | None = Field(validation_alias=AliasChoices(AliasPath('extended', 'pcp'),'pcp'), default=None)
 
     @computed_field
     @property
     def count(self) -> int:
         return 1 + len(self.additional_media)
-
-    # @model_validator(mode='after')
-    # def _validate_extended(self):
-    #     if self.multiImage and self.additional_media:
-    #         self.media += self.additional_media
-    #     return self
