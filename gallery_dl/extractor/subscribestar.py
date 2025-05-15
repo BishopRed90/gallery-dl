@@ -365,7 +365,6 @@ by {username}, {date}
 {content}
 """
 
-# TODO - Snatch the CSS File
 JOURNAL_TEMPLATE_HTML = """text:<!DOCTYPE html>
 <html lang="">
 <head>
