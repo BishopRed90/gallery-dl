@@ -43,17 +43,12 @@ class SubscribeStarExtractor(Extractor):
         for post_html in self.posts():
             media = self._media_from_post(post_html)
             data = self._data_from_post(post_html)
-            # if _ := self.config('avatars', None):
-            #     if avatar := self._avatar_from_post(data["author_id"] if _ == "author" else None):
-            #         media += avatar
-
-            data["title"] = text.unescape(text.extr(
-                data["content"], "<h1>", "</h1>"))
             data["count"] = len(media)
             yield Message.Directory, data
 
             _re_link_cache = {}
-            for num, item in enumerate(media, 1):
+            for num, _item in enumerate(media, 1):
+                item = _item.copy()
                 item.update(data)
                 if not item.get("type") == "avatar":
                     item["num"] = num
@@ -72,7 +67,7 @@ class SubscribeStarExtractor(Extractor):
                 if item.get('url'):
                     _re_link_cache[item["url"]] = item["_gdl_path"].path
 
-                item['url'] = item['gallery_preview_url'] = item['preview_url'] = item["_gdl_path"].path
+                _item['url'] = _item['gallery_preview_url'] = _item['preview_url'] = item["_gdl_path"].path
 
             for link in post_html.find_all('img'):
                 link['src'] = _re_link_cache.get(link['src'], '')
@@ -82,8 +77,9 @@ class SubscribeStarExtractor(Extractor):
                     link['onclick'] = "window.open(this.src)"
 
             if gallery := post_html.find('div', {"class": "uploads-images"}):
+                _test = util.json_dumps(media)
                 gallery['data-gallery'] = util.json_dumps(media)
-                self._render_previews(post_html)
+                # self._render_previews(post_html)
 
             journals = self.config("posts", "html")
             if journals == "text":
@@ -91,14 +87,13 @@ class SubscribeStarExtractor(Extractor):
             elif journals == "html":
                 for link in post_html.find_all('a'):
                     link['href'] = self.root + link['href']
-
-                html_content = post_html.find('div', {'class': 'section for-single_post'})
-                html_author = post_html.find('div', {'class': 'section for-single_post_sidebar is-sticky'})
+                post_body = post_html.find('div', class_=['section-body', 'post-body'])
+                author_avatar = post_html.find('img',{'data-user-id': data['author_id']}),
                 post_info = {
-                    "html_author": str(html_author if None else ""),
-                    "html_content": str(html_content if None else post_html),
+                    "post_body": str(post_body if not None else post_html),
+                    "author_avatar": author_avatar
                 }
-                if post_info["html_content"]:
+                if post_info["post_body"]:
                     yield self._commit_post_html(data, post_info)
                 else:
                     yield self._commit_journal_text(data)
@@ -230,17 +225,19 @@ class SubscribeStarExtractor(Extractor):
         return list(media.values())
 
     def _data_from_post(self, html):
-        extr = text.extract_from(html)
         author_name = html.find(['a','div'], ['profile_main_info-name', 'star_link-name', 'post-user']).text.strip()
         author_id = html.find(['a', 'div'], ['star_link-avatar', 'post-avatar']).next.get('data-user-id')
+        post_title = html.select('div.post-title') if None else html.find('h1')
+        author_bio = html.find('div', ['star_link-types', 'profile_main_info-description'])
         return {
             "post_id"    : html.select('[data-post_id]')[0]['data-post_id'],
+            "post_title" : post_title.text.strip() if post_title else '',
             "author_id"  : author_id,
             "author_name": author_name,
+            "author_bio" : author_bio.text.strip() if author_bio else '',
             "date"       : self._parse_datetime(
                 html.find('div', ['post-date', 'section-title_date']).text.strip()
-            ),
-            "content"    : extr('<body>', '</body>').strip()
+            )
         }
 
     def _avatar_from_post(self, user_id: int = None) -> list[dict]:
@@ -264,11 +261,19 @@ class SubscribeStarExtractor(Extractor):
             preview_section = self.soup.new_tag('div', attrs={'class': 'previews', 'data-role': 'uploads_gallery-previews'})
             gallery.append(preview_section)
             previews = util.json_loads(gallery['data-gallery'])
-            height = 100/min(len(previews), 1)
-            width = 100/min(len(previews), 1)
             for preview in previews:
                 if preview.get('type') == 'image':
-                    preview_item = self.soup.new_tag('div', attrs={'class': 'preview', 'data-role':'uploads_gallery-preview upload', 'data-upload-id': preview['id'], 'style': f'width: {width}%; padding-bottom: {height}%;', 'onclick': "window.open(this.querySelector('img').src)"})
+                    height = int(preview.get('height'))
+                    width = int(preview.get('width'))
+                    if width > height:
+                        height = round(height / width * 100)/2
+                        width = 50
+
+                    else:
+                        width = round(width / height * 100)/2
+                        height = 50
+
+                    preview_item = self.soup.new_tag('div', attrs={'class': 'preview', 'data-role':'uploads_gallery-preview upload', 'data-upload-id': preview['id'], 'onclick': "window.open(this.querySelector('img').src)"})
                     preview_inner= self.soup.new_tag('div', attrs={'class': 'preview-inner', 'data-role':'uploads_gallery-preview_inner'})
                     preview_img = self.soup.new_tag('img', attrs={'src': f'{preview['url']}', 'class': 'preview-img'})
 
@@ -309,15 +314,19 @@ class SubscribeStarExtractor(Extractor):
         post["extension"] = "txt"
         return Message.Url, txt, post
 
-    def _commit_post_html(self, post, html_info):
-        content = html_info["html_content"]
-        author = html_info["html_author"]
-
-        if not content:
+    def _commit_post_html(self, post, post_info):
+        if not post_info["post_body"]:
             self.log.warning("%s: Empty post content", post["index"])
             return None
         else:
-            html = JOURNAL_TEMPLATE_HTML.format(content=content, author=author)
+            html = JOURNAL_TEMPLATE_HTML.format(
+                post_body=post_info["post_body"],
+                post_title=post["post_title"],
+                post_date=post["date"],
+                author_name=post["author_name"],
+                author_avatar=post_info["author_avatar"],
+                author_bio=post["author_bio"]
+            )
             post["extension"] = "html"
             post["type"] = "post"
             return Message.Url, html, post
@@ -365,15 +374,16 @@ by {username}, {date}
 {content}
 """
 
-JOURNAL_TEMPLATE_HTML = """text:<!DOCTYPE html>
+JOURNAL_TEMPLATE_HTML = """text:
+<!DOCTYPE html>
 <html lang="">
 <head>
-    <title>SubscribeStar.adult</title>
+    <title>{post_title}</title>
     <meta content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=no" name="viewport"/>
     <meta name="action-cable-url" content="/cable"/>
     <meta content="72c35a3ce4ae8fc1d49ae85a68cb22d5" name="p:domain_verify"/>
     <link rel="stylesheet" media="screen"
-          href="SubscribeStar.css"
+          href="../../CSS/SubscribeStar.css"
           data-track-change="true"/>
 </head>
 <body>
@@ -383,12 +393,46 @@ JOURNAL_TEMPLATE_HTML = """text:<!DOCTYPE html>
             <div class="post wrapper for-profile_columns is-single is-shown" data-comments-loaded="true"
                  data-edit-path="/posts/1817339/edit?single_post_view=true" data-id="1817339" data-role="popup_anchor"
                  data-view="app#post">
-                {content}
-                {author}
+                <div class="section for-single_post">
+                    <div class="section-title">
+                        <div class="section-title_date">{post_date}</div>
+                    </div>
+                    {post_body}
+                </div>
+                <div class="section for-single_post_sidebar is-sticky">
+                    <div class="section-title"><h2 class="section-title_text">Author</h2></div>
+                    <div class="section-body">
+                        <div class="star_links">
+                            <a class="star_link" href="/{author_name}">
+                                <div class="star_link-avatar is-red">
+                                    {author_avatar}
+                                </div>
+                                <div class="star_link-info">
+                                    <div class="star_link-name">{author_name}</div>
+                                    <div class="star_link-types">{author_bio}</div>
+                                </div>
+                            </a></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 </div>
+<div class="layout-overlay" data-view="app#overlay">
+  <div class="overlay-bg" data-role="overlay-bg"></div>
+  <div class="overlay" data-scrollable="" data-role="overlay-wrap" tabindex="-1">
+    <div class="overlay-close" data-role="overlay-hide">
+      <div class="overlay-close_inner">
+        <div class="overlay-close_line"></div>
+        <div class="overlay-close_line"></div>
+      </div>
+    </div>
+    <div class="overlay-content" data-role="overlay-content" data-view="app#fix_scroll">
+    </div>
+  </div>
+</div>
+
 </body>
+<script src="../../CSS/Render.js"></script>
 </html>
 """
