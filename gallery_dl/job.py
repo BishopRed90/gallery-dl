@@ -195,6 +195,9 @@ class Job():
             if self.pred_url(url, kwdict):
                 self.update_kwdict(kwdict)
                 self.handle_url(url, kwdict)
+            else:
+                self.pathfmt.build_path()
+                output.select().skip(f"Filtered: {self.pathfmt.path}")
 
         elif msg[0] == Message.Directory:
             self.update_kwdict(msg[1])
@@ -547,6 +550,60 @@ class DownloadJob(Job):
             # monkey-patch method to do nothing and always return True
             self.download = pathfmt.fix_extension
 
+        postprocessors = extr.config_accumulate("postprocessors")
+        if postprocessors:
+            self.hooks = collections.defaultdict(list)
+
+            pp_log = self.get_logger("postprocessor")
+            pp_conf = config.get((), "postprocessor") or {}
+            pp_opts = cfg("postprocessor-options")
+            pp_list = []
+
+            for pp_dict in postprocessors:
+                if isinstance(pp_dict, str):
+                    pp_dict = pp_conf.get(pp_dict) or {"name": pp_dict}
+                elif "type" in pp_dict:
+                    pp_type = pp_dict["type"]
+                    if pp_type in pp_conf:
+                        pp = pp_conf[pp_type].copy()
+                        pp.update(pp_dict)
+                        pp_dict = pp
+                    if "name" not in pp_dict:
+                        pp_dict["name"] = pp_type
+                if pp_opts:
+                    pp_dict = pp_dict.copy()
+                    pp_dict.update(pp_opts)
+
+                clist = pp_dict.get("whitelist")
+                if clist is not None:
+                    negate = False
+                else:
+                    clist = pp_dict.get("blacklist")
+                    negate = True
+                if clist and not util.build_extractor_filter(
+                        clist, negate)(extr):
+                    continue
+
+                name = pp_dict.get("name")
+                pp_cls = postprocessor.find(name)
+                if not pp_cls:
+                    pp_log.warning("module '%s' not found", name)
+                    continue
+                try:
+                    pp_obj = pp_cls(self, pp_dict)
+                except Exception as exc:
+                    pp_log.error("'%s' initialization failed:  %s: %s",
+                                 name, exc.__class__.__name__, exc)
+                    pp_log.debug("", exc_info=exc)
+                else:
+                    pp_list.append(pp_obj)
+
+            if pp_list:
+                extr.log.debug("Active postprocessor modules: %s", pp_list)
+                if "init" in self.hooks:
+                    for callback in self.hooks["init"]:
+                        callback(pathfmt)
+
         archive_path = cfg("archive")
         if archive_path:
             archive_table = cfg("archive-table")
@@ -613,60 +670,6 @@ class DownloadJob(Job):
 
         if not cfg("postprocess", True):
             return
-
-        postprocessors = extr.config_accumulate("postprocessors")
-        if postprocessors:
-            self.hooks = collections.defaultdict(list)
-
-            pp_log = self.get_logger("postprocessor")
-            pp_conf = config.get((), "postprocessor") or {}
-            pp_opts = cfg("postprocessor-options")
-            pp_list = []
-
-            for pp_dict in postprocessors:
-                if isinstance(pp_dict, str):
-                    pp_dict = pp_conf.get(pp_dict) or {"name": pp_dict}
-                elif "type" in pp_dict:
-                    pp_type = pp_dict["type"]
-                    if pp_type in pp_conf:
-                        pp = pp_conf[pp_type].copy()
-                        pp.update(pp_dict)
-                        pp_dict = pp
-                    if "name" not in pp_dict:
-                        pp_dict["name"] = pp_type
-                if pp_opts:
-                    pp_dict = pp_dict.copy()
-                    pp_dict.update(pp_opts)
-
-                clist = pp_dict.get("whitelist")
-                if clist is not None:
-                    negate = False
-                else:
-                    clist = pp_dict.get("blacklist")
-                    negate = True
-                if clist and not util.build_extractor_filter(
-                        clist, negate)(extr):
-                    continue
-
-                name = pp_dict.get("name")
-                pp_cls = postprocessor.find(name)
-                if not pp_cls:
-                    pp_log.warning("module '%s' not found", name)
-                    continue
-                try:
-                    pp_obj = pp_cls(self, pp_dict)
-                except Exception as exc:
-                    pp_log.error("'%s' initialization failed:  %s: %s",
-                                 name, exc.__class__.__name__, exc)
-                    pp_log.debug("", exc_info=exc)
-                else:
-                    pp_list.append(pp_obj)
-
-            if pp_list:
-                extr.log.debug("Active postprocessor modules: %s", pp_list)
-                if "init" in self.hooks:
-                    for callback in self.hooks["init"]:
-                        callback(pathfmt)
 
     def register_hooks(self, hooks, options=None):
         expr = options.get("filter") if options else None

@@ -332,6 +332,7 @@ class PathFormat():
     def finalize(self):
         """Move tempfile to its target location"""
         self.set_directory(self.kwdict)
+        self.build_filename(self.kwdict)
         self.build_path()
         if self.delete:
             self.delete = False
