@@ -29,7 +29,9 @@ class SubscribeStarExtractor(Extractor):
     _warning: bool = True
 
     def __init__(self, match):
-        tld, self.item = match.groups()
+        tld = match.group(1)
+        self.item = match.group(2)
+        self.params = match.group(3)
         if tld == "adult":
             self.root = "https://subscribestar.adult"
             self.cookies_domain = ".subscribestar.adult"
@@ -334,11 +336,16 @@ class SubscribeStarExtractor(Extractor):
 class SubscribeStarUserExtractor(SubscribeStarExtractor):
     """Extractor for media from a subscribestar user"""
     subcategory = "user"
-    pattern = BASE_PATTERN + r"/(?!posts/)([^/?#]+)"
-    example = "https://www.subscribestar.com/USER"
+    pattern = BASE_PATTERN + r"/(?!posts/)([^/?#]+)(\?tag=[\w]+)?"
+    example = "https://www.subscribestar.com/USER/tag=TAGNAME"
 
     def posts(self):
-        page = self.request("{}/{}".format(self.root, self.item)).text
+        if self.params:
+            url = "{}/{}{}".format(self.root, self.item, self.params)
+        else:
+            url = "{}/{}".format(self.root, self.item)
+
+        page = self.request(url).text
 
         while True:
             self.soup = BeautifulSoup(page, "html.parser")
