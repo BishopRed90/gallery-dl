@@ -1106,22 +1106,6 @@ class DeviantartAvatarExtractor(DeviantartExtractor):
             "content"        : {"src": url},
         }
 
-
-class DeviantartBackgroundExtractor(DeviantartExtractor):
-    """Extractor for an artist's banner"""
-    subcategory = "background"
-    archive_fmt = "b_{index}"
-    pattern = BASE_PATTERN + r"/ba(?:nner|ckground)"
-    example = "https://www.deviantart.com/USER/banner/"
-
-    def deviations(self):
-        try:
-            return (self.api.user_profile(self.user.lower())
-                    ["cover_deviation"]["cover_deviation"],)
-        except Exception:
-            return ()
-
-
 class DeviantartFolderExtractor(DeviantartExtractor):
     """Extractor for deviations inside an artist's gallery folder"""
     subcategory = "folder"
