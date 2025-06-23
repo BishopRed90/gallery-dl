@@ -794,21 +794,43 @@ class DeviantartFolderExtractor(DeviantartExtractor):
                     deviation['folder'] = subfolder
                     yield Deviation.model_validate(deviation)
 
-class DeviantartWatchExtractor(DeviantartExtractor):
+class DeviantartWatchSubExtractor(DeviantartExtractor):
     """Extractor for Deviations from watched users"""
     subcategory = "watch"
     pattern = (r"(?:https?://)?(?:www\.)?deviantart\.com"
-               r"/(?:watch/deviations|notifications/watch)"
-               r"(?:/deviations/([\w]+))?")
+               r"/(?:notifications/watch)"
+               r"(?:/mysubscriptions/([\w\W]+))?")
     example = "https://www.deviantart.com/watch/deviations/USER"
 
     def deviations(self):
         if self.user:
             user_info = self.api.user_info(self.user)
             user_id = user_info["owner"]["userId"]
-
-            for deviation in self.api.deviants_you_watch(user_id):
+            response = self.api.deviants_you_watch(user_id, 'tiercontent')
+            for deviation in response:
                 yield Deviation.model_validate(deviation['deviation'])
+                if self.config('archive-deviation', False):
+                    self.eclipse_api.archive_watched_deviation(deviation['messageId'])
+
+
+class DeviantartWatchExtractor(DeviantartExtractor):
+    """Extractor for Deviations from watched users"""
+    subcategory = "watch"
+    pattern = (r"(?:https?://)?(?:www\.)?deviantart\.com"
+               r"/(?:watch/deviations|notifications/watch)"
+               r"(?:/deviations/([\w\W]+))?")
+    example = "https://www.deviantart.com/watch/deviations/USER"
+
+    def deviations(self):
+        if self.user:
+            user_info = self.api.user_info(self.user)
+            user_id = user_info["owner"]["userId"]
+            response = self.api.deviants_you_watch(user_id)
+            for deviation in response:
+                yield Deviation.model_validate(deviation['deviation'])
+                if self.config('archive-deviation', False):
+                    self.eclipse_api.archive_watched_deviation(deviation['messageId'])
+
 
 # region ##### DeviantArt API's #####
 class DeviantartOAuthAPI():
@@ -1429,15 +1451,37 @@ class DeviantartEclipseAPI():
         }
         return self._pagination(endpoint, params)
 
-    def deviants_you_watch(self, user_id):
+    def deviants_you_watch(self, user_id, type="deviations"):
         endpoint = "/_puppy/damessagecentre/stack"
         params = {
-            "stackid": "uq:devwatch:tg=deviations,sender={}".format(user_id),
-            "type": "deviations",
+            "stackid": "uq:devwatch:tg={},sender={}".format(type, user_id),
+            "type": type,
             "offset": 0,
             "limit": 50, # Doing more, then this resets to 10
         }
         return self._pagination(endpoint, params)
+
+    def archive_watched_deviation(self, message_ids):
+        endpoint = "/_puppy/damessagecentre/move"
+        data = {
+            "messageids": message_ids,
+            "dest_folder": "archived",
+            "da_minor_version": "20230710",
+            "cursor": ""
+        }
+        return self._post(endpoint, data).get('success', False)
+
+    def _post(self, endpoint: str, data: dict):
+        url = "https://www.deviantart.com" + endpoint
+        data["csrf_token"] = self.csrf_token or self._fetch_csrf_token()
+
+        response = self.extractor.request(url, method="POST", data=data)
+        try:
+            data = response.json()
+            return data
+        except ValueError:
+            self.log.error("Unable to parse API response")
+            return {}
 
     def _call(self, endpoint: str, params: dict) -> dict:
         url = "https://www.deviantart.com" + endpoint
