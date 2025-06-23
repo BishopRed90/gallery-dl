@@ -794,6 +794,21 @@ class DeviantartFolderExtractor(DeviantartExtractor):
                     deviation['folder'] = subfolder
                     yield Deviation.model_validate(deviation)
 
+class DeviantartWatchExtractor(DeviantartExtractor):
+    """Extractor for Deviations from watched users"""
+    subcategory = "watch"
+    pattern = (r"(?:https?://)?(?:www\.)?deviantart\.com"
+               r"/(?:watch/deviations|notifications/watch)"
+               r"(?:/deviations/([\w]+))?")
+    example = "https://www.deviantart.com/watch/deviations/USER"
+
+    def deviations(self):
+        if self.user:
+            user_info = self.api.user_info(self.user)
+            user_id = user_info["owner"]["userId"]
+
+            for deviation in self.api.deviants_you_watch(user_id):
+                yield Deviation.model_validate(deviation['deviation'])
 
 # region ##### DeviantArt API's #####
 class DeviantartOAuthAPI():
