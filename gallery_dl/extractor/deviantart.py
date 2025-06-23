@@ -32,7 +32,7 @@ class DeviantartExtractor(Extractor):
     root = "https://www.deviantart.com"
     directory_fmt = ("{category}", "{username}")
     filename_fmt = "{category}_{id}_{title}{media['position']:?-//}.{extension}"
-    archive_fmt = "{author['uuid']}_{uuid}{fileId:?_//}.{extension}"
+    archive_fmt = "{author['uuid']}_{uuid|media['fileId']|id}{media['position']:?_//}.{extension}"
     cookies_domain = ".deviantart.com"
     cookies_names = ("auth", "auth_secure", "userinfo")
     _last_request = 0
@@ -151,7 +151,7 @@ class DeviantartExtractor(Extractor):
                 (deviation.purchasable and not deviation.premium_content)):
                 # Missing Extended Deviation Info
                 response = self.api.deviation(deviation.id, deviation.author.username, "art")
-                deviation = Deviation.model_validate(response)
+                deviation = Deviation.model_validate(response['deviation'])
 
             _deviation = deviation.model_dump()
             yield Message.Directory, _deviation
@@ -743,6 +743,21 @@ class DeviantartGalleryExtractor(DeviantartExtractor):
                     deviation.index += 1
                     deviation.downloadable = False
                     yield deviation
+
+class DeviantartGallerySearchExtractor(DeviantartExtractor):
+    """Extractor for deviantart gallery searches"""
+    subcategory = "gallery-search"
+    pattern = BASE_PATTERN + r"/gallery/?\?(q=[^#]+)"
+    example = "https://www.deviantart.com/USER/gallery?q=QUERY"
+
+    def __init__(self, match):
+        DeviantartExtractor.__init__(self, match)
+        self.query = match.group(3)
+
+    def deviations(self) -> Generator[Deviation]:
+        search = text.parse_query(self.query).get('q')
+        for deviation in self.eclipse_api.gallery_search(self.user, search):
+            yield Deviation.model_validate(deviation)
 
 class DeviantartFolderExtractor(DeviantartExtractor):
     """Extractor for deviations inside an artist's gallery folder"""
@@ -1364,7 +1379,7 @@ class DeviantartEclipseAPI():
         }
         return self._pagination(endpoint, params)
 
-    def galleries_search(self, user, query, offset=0, order="most-recent"):
+    def gallery_search(self, user, query, offset=0, order="most-recent"):
         endpoint = "/_puppy/dashared/gallection/search"
         params = {
             "username": user,
@@ -1372,7 +1387,7 @@ class DeviantartEclipseAPI():
             "order"   : order,
             "q"       : query,
             "offset"  : offset,
-            "limit"   : 24,
+            "limit"   : 120,
         }
         return self._pagination(endpoint, params)
 

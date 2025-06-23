@@ -1,5 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
+from functools import cached_property
 from uuid import UUID
 
 from pydantic import BaseModel, Field, AliasChoices, AliasPath, \
@@ -30,12 +31,18 @@ class DeviationMedia(BaseModel):
     transparency: bool | None = Field(default=None)
     filesize: int | None = Field(default=None, alias="zipFilesize")
     extension: str | None = Field(default=None, alias="type")
-    position: int = Field(default=0)
+    position_: int = Field(default=0, alias="position", exclude=True)
 
     @computed_field
-    @property
+    @cached_property
     def src(self) -> str:
-        if self.token and self.types:
+            # TODO - Check if we can use the `q` for quality field
+        if self.types:
+            video = max([video for video in self.types if video.get('t') == "video"], key=lambda x:x.get('h'))
+            if video:
+                return video['b']
+
+        if self.types and self.token:
             base_uri = self.uri
             token = "?token=" + self.token[0]
             view = next(view.get('c') for view in self.types if view.get('t') == "fullview")
@@ -47,12 +54,17 @@ class DeviationMedia(BaseModel):
         else:
             return self.uri
 
+    @computed_field
+    @property
+    def position(self) -> int:
+        return self.position_ + 1
+
 class AdditionalMedia(DeviationMedia):
     fileId: int
-    position: int
     filename: str
 
 class PremiumContent(DeviationMedia):
+    uri: str | None = Field(validation_alias=AliasChoices('baseUri','src', 'url', AliasPath('media','baseUri')), default=None)
     productid: int = Field(alias="subproductId")
     purchased: bool = Field(validation_alias=AliasChoices('hasUserPurchased','has_user_purchased'))
     assets: list[dict]
@@ -179,5 +191,3 @@ class Deviation(BaseModel):
     @property
     def count(self) -> int:
         return 1 + len(self.additional_media)
-
-
