@@ -38,8 +38,9 @@ class DeviationMedia(BaseModel):
     def src(self) -> str:
             # TODO - Check if we can use the `q` for quality field
         if self.types:
-            video = max([video for video in self.types if video.get('t') == "video"], key=lambda x:x.get('h'))
-            if video:
+            videos = [video for video in self.types if video.get('t') == "video"]
+            if videos:
+                video = max(videos, key=lambda x:x.get('h'))
                 return video['b']
 
         if self.types and self.token:
