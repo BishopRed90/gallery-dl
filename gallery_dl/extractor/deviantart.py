@@ -138,6 +138,10 @@ class DeviantartExtractor(Extractor):
                 self.log.debug(
                     "Skipping Deviation %s (deleted)", deviation.uuid if not None else deviation.id)
                 continue
+            elif deviation.media is None:
+                self.log.debug(
+                    "Skipping Deviation %s (Journal - Unsupported)", deviation.uuid if not None else deviation.id)
+                continue
             elif deviation.tier_access == "locked":
                 self.log.debug(
                     "Skipping %s (Subscription - locked)", deviation.uuid)
@@ -156,16 +160,18 @@ class DeviantartExtractor(Extractor):
             _deviation = deviation.model_dump()
             yield Message.Directory, _deviation
 
-            if deviation.premium_content and deviation.premium_content.purchased:
-                _extension = deviation.media.extension
-                deviation.media.extension = deviation.premium_content.extension
-                yield Message.Url, deviation.premium_content.src, deviation.model_dump()
-                deviation.media.extension = _extension
+
 
             if deviation.download and deviation.downloadable:
                 yield Message.Url, deviation.download.src, _deviation
             elif deviation.media:
                 yield Message.Url, deviation.media.src, deviation.model_dump()
+
+            if deviation.premium_content and deviation.premium_content.purchased:
+                _extension = deviation.media.extension
+                deviation.media.extension = deviation.premium_content.extension
+                yield Message.Url, deviation.premium_content.src, deviation.model_dump()
+                deviation.media.extension = _extension
 
             for media in deviation.additional_media:
                 deviation.media = media
@@ -729,20 +735,9 @@ class DeviantartGalleryExtractor(DeviantartExtractor):
 
     def deviations(self) -> Generator[Deviation]:
         if isinstance(self.api, DeviantartEclipseAPI):
-            response = self.eclipse_api.deviation(self.deviation_id, self.user, self.type)
-            deviation = Deviation.model_validate(response["deviation"])
-            if deviation.multiImage:
-                self.filename_fmt = ("{category}_{index}_{index_file}_{title}_"
-                                     "{num:>02}.{extension}")
-
-            yield deviation
-
-            if deviation.multiImage and deviation.additional_media:
-                for index, next_img in enumerate(deviation.additional_media):
-                    deviation.media = next_img
-                    deviation.index += 1
-                    deviation.downloadable = False
-                    yield deviation
+            gallery = self.eclipse_api.gallery(self.user)
+            for deviation in gallery:
+                yield Deviation.model_validate(deviation)
 
 class DeviantartGallerySearchExtractor(DeviantartExtractor):
     """Extractor for deviantart gallery searches"""
@@ -794,25 +789,6 @@ class DeviantartFolderExtractor(DeviantartExtractor):
                     deviation['folder'] = subfolder
                     yield Deviation.model_validate(deviation)
 
-class DeviantartWatchSubExtractor(DeviantartExtractor):
-    """Extractor for Deviations from watched users"""
-    subcategory = "watch"
-    pattern = (r"(?:https?://)?(?:www\.)?deviantart\.com"
-               r"/(?:notifications/watch)"
-               r"(?:/mysubscriptions/([\w\W]+))?")
-    example = "https://www.deviantart.com/watch/deviations/USER"
-
-    def deviations(self):
-        if self.user:
-            user_info = self.api.user_info(self.user)
-            user_id = user_info["owner"]["userId"]
-            response = self.api.deviants_you_watch(user_id, 'tiercontent')
-            for deviation in response:
-                yield Deviation.model_validate(deviation['deviation'])
-                if self.config('archive-deviation', False):
-                    self.eclipse_api.archive_watched_deviation(deviation['messageId'])
-
-
 class DeviantartWatchExtractor(DeviantartExtractor):
     """Extractor for Deviations from watched users"""
     subcategory = "watch"
@@ -826,6 +802,25 @@ class DeviantartWatchExtractor(DeviantartExtractor):
             user_info = self.api.user_info(self.user)
             user_id = user_info["owner"]["userId"]
             response = self.api.deviants_you_watch(user_id)
+            for deviation in response:
+                yield Deviation.model_validate(deviation['deviation'])
+                if self.config('archive-deviation', False):
+                    self.eclipse_api.archive_watched_deviation(deviation['messageId'])
+
+class DeviantartWatchSubExtractor(DeviantartExtractor):
+    # TODO - Fix the Matching on This - needs to not match the above
+    """Extractor for Deviations from watched users"""
+    subcategory = "watch"
+    pattern = (r"(?:https?://)?(?:www\.)?deviantart\.com"
+               r"/(?:notifications/watch)"
+               r"(?:/mysubscriptions/([\w\W]+))?")
+    example = "https://www.deviantart.com/watch/deviations/USER"
+
+    def deviations(self):
+        if self.user:
+            user_info = self.api.user_info(self.user)
+            user_id = user_info["owner"]["userId"]
+            response = self.api.deviants_you_watch(user_id, 'tiercontent')
             for deviation in response:
                 yield Deviation.model_validate(deviation['deviation'])
                 if self.config('archive-deviation', False):
@@ -1402,6 +1397,19 @@ class DeviantartEclipseAPI():
             "da_minor_version": "20230710",
             "order": "default",
             "limit": 60,
+        }
+        return self._pagination(endpoint, params)
+
+    def gallery(self, user, offset=0):
+        endpoint = "/_puppy/dashared/gallection/contents"
+        params = {
+            "all_folders": True,
+            "da_minor_version": "20230710",
+            "username"        : user,
+            "type"            : "gallery",
+            "order": "default",
+            "limit": 60,
+            "offset": offset,
         }
         return self._pagination(endpoint, params)
 
