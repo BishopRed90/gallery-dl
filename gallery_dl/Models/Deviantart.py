@@ -1,6 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 from functools import cached_property
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, Field, AliasChoices, AliasPath, \
@@ -138,7 +139,7 @@ class Deviation(BaseModel):
     # Core properties
     author: DeviantAuthor
     id: int | None = Field(alias='deviationId', default=None)
-    media: DeviationMedia = Field(validation_alias=AliasChoices('media','content'))
+    media: DeviationMedia | None = Field(validation_alias=AliasChoices('media','content'))
     published_time: datetime = Field(validation_alias=AliasChoices('published_time','publishedTime'))
     uuid: UUID | None = Field(validation_alias=AliasChoices(AliasPath('extended', 'deviationUuid'), 'deviationid'), default=None)
     stats: DeviationStats
@@ -167,6 +168,15 @@ class Deviation(BaseModel):
     premium_content: PremiumContent | None = Field(validation_alias=AliasChoices(AliasPath('extended', 'pcp'),'pcp'), default=None)
     folder: GalleryFolder | None = Field(default=None)
 
+    @model_validator(mode='before')
+    @classmethod
+    def _journal(cls, data: Any) -> Any:
+        if data.get('media').get('baseUri'):
+            return data
+        else:
+            data['media'] = None
+            return data
+
     @model_validator(mode='after')
     def _validate_extended(self):
         self.published_time = datetime.fromtimestamp(self.published_time.timestamp())
@@ -174,12 +184,12 @@ class Deviation(BaseModel):
         if self.id is None:
             # TODO - This may need to be updated to make sure we have processed sta.sh and other values
             self.id = int(self.url.split('-')[-1])
+        if self.media:
+            if not self.media.extension:
+                self.media.extension = self.media.uri.split('.')[-1]
 
-        if not self.media.extension:
-            self.media.extension = self.media.uri.split('.')[-1]
-
-        if self.media.token and self.media.filesize is None:
-            self.media.filesize = next(view.get('f') for view in self.media.types if view.get('t') == "fullview")
+            if self.media.token and self.media.filesize is None:
+                self.media.filesize = next(view.get('f') for view in self.media.types if view.get('t') == "fullview")
 
         return self
 
