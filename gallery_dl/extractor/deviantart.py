@@ -813,10 +813,11 @@ class DeviantartWatchExtractor(DeviantartExtractor):
     subcategory = "watch"
     pattern = (r"(?:https?://)?(?:www\.)?deviantart\.com"
                r"/(?:watch/deviations|notifications/watch)"
-               r"(?:/deviations/([\w\W]+))?")
-    example = "https://www.deviantart.com/watch/deviations/USER"
+               r"(?:/deviations/([\w\W]+))")
+    example = "https://www.deviantart.com/watch/deviations/deviations/USER"
 
     def deviations(self) -> Generator[Deviation]:
+
         if self.user:
             user_info = self.api.user_info(self.user)
             user_id = user_info["owner"]["userId"]
@@ -830,13 +831,12 @@ class DeviantartWatchExtractor(DeviantartExtractor):
 
 
 class DeviantartWatchSubExtractor(DeviantartExtractor):
-    # TODO - Fix the Matching on This - needs to not match the above
     """Extractor for Deviations from watched users"""
     subcategory = "watch"
     pattern = (r"(?:https?://)?(?:www\.)?deviantart\.com"
                r"/(?:notifications/watch)"
-               r"(?:/mysubscriptions/([\w\W]+))?")
-    example = "https://www.deviantart.com/watch/deviations/USER"
+               r"(?:/mysubscriptions/([\w\W]+))")
+    example = "https://www.deviantart.com/notifications/watch/mysubscriptions/USER"
 
     def deviations(self) -> Generator[Deviation]:
         if self.user:
