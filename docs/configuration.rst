@@ -6762,6 +6762,8 @@ Description
         After a file got moved to its target location
     ``skip``
         When skipping a file download
+    ``filter``
+        When a file is filtered (image-filter or chapter-filter)
     ``error``
         After a file download failed
     ``post``
