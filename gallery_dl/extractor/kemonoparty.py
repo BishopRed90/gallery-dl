@@ -15,7 +15,7 @@ import itertools
 import json
 import re
 
-BASE_PATTERN = r"(?:https?://)?(?:www\.|beta\.)?(kemono|coomer)\.(su|party)"
+BASE_PATTERN = r"(?:https?://)?(?:www\.|beta\.)?(kemono|coomer)\.(su|party|cr)"
 USER_PATTERN = BASE_PATTERN + r"/([^/?#]+)/user/([^/?#]+)"
 HASH_PATTERN = r"/[0-9a-f]{2}/[0-9a-f]{2}/([0-9a-f]{64})"
 
@@ -547,7 +547,7 @@ class KemonoAPI():
 
     def creator_posts_legacy(self, service, creator_id,
                              offset=0, query=None, tags=None):
-        endpoint = "/{}/user/{}/posts-legacy".format(service, creator_id)
+        endpoint = "/{}/user/{}/posts".format(service, creator_id)
         params = {"o": offset, "tag": tags, "q": query}
         return self._pagination(endpoint, params, 50, "results")
 

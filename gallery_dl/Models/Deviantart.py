@@ -66,10 +66,11 @@ class AdditionalMedia(DeviationMedia):
     filename: str
 
 class PremiumContent(DeviationMedia):
+#TODO - Figure out how to determine if they have purchased the content - general gallery doesn't allow it
     uri: str | None = Field(validation_alias=AliasChoices('baseUri','src', 'url', AliasPath('media','baseUri')), default=None)
     productid: int = Field(alias="subproductId")
-    purchased: bool = Field(validation_alias=AliasChoices('hasUserPurchased','has_user_purchased'))
-    assets: list[dict]
+    purchased: bool = Field(validation_alias=AliasChoices('hasUserPurchased','has_user_purchased'), default=False)
+    assets: list[dict] = Field(default_factory=list)
     extension: str = "zip"
 
 class GalleryFolder(BaseModel):
