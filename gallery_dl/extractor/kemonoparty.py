@@ -22,6 +22,7 @@ HASH_PATTERN = r"/[0-9a-f]{2}/[0-9a-f]{2}/([0-9a-f]{64})"
 
 class KemonopartyExtractor(Extractor):
     """Base class for kemonoparty extractors"""
+
     category = "kemonoparty"
     root = "https://kemono.su"
     directory_fmt = ("{category}", "{service}", "{user}")
@@ -41,17 +42,21 @@ class KemonopartyExtractor(Extractor):
         self.api = KemonoAPI(self)
         self.revisions = self.config("revisions")
         if self.revisions:
-            self.revisions_unique = (self.revisions == "unique")
+            self.revisions_unique = self.revisions == "unique"
         order = self.config("order-revisions")
         self.revisions_reverse = order[0] in ("r", "a") if order else False
 
         self._prepare_ddosguard_cookies()
         self._find_inline = re.compile(
             r'src="(?:https?://(?:kemono|coomer)\.(?:su|party))?(/inline/[^"]+'
-            r'|/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{64}\.[^"]+)').findall
+            r'|/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{64}\.[^"]+)'
+        ).findall
         self._json_dumps = json.JSONEncoder(
-            ensure_ascii=False, check_circular=False,
-            sort_keys=True, separators=(",", ":")).encode
+            ensure_ascii=False,
+            check_circular=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode
 
     def items(self):
         find_hash = re.compile(HASH_PATTERN).match
@@ -76,10 +81,12 @@ class KemonopartyExtractor(Extractor):
 
         for post in posts:
             headers["Referer"] = "{}/{}/user/{}/post/{}".format(
-                self.root, post["service"], post["user"], post["id"])
+                self.root, post["service"], post["user"], post["id"]
+            )
             post["_http_headers"] = headers
             post["date"] = self._parse_datetime(
-                post.get("published") or post.get("added") or "")
+                post.get("published") or post.get("added") or ""
+            )
             service = post["service"]
             creator_id = post["user"]
 
@@ -87,7 +94,8 @@ class KemonopartyExtractor(Extractor):
                 key = "{}_{}".format(service, creator_id)
                 if key not in creator_info:
                     creator = creator_info[key] = self.api.creator_profile(
-                        service, creator_id)
+                        service, creator_id
+                    )
                 else:
                     creator = creator_info[key]
 
@@ -97,13 +105,13 @@ class KemonopartyExtractor(Extractor):
             if comments:
                 try:
                     post["comments"] = self.api.creator_post_comments(
-                        service, creator_id, post["id"])
+                        service, creator_id, post["id"]
+                    )
                 except exception.HttpError:
                     post["comments"] = ()
             if dms is not None:
                 if dms is True:
-                    dms = self.api.creator_dms(
-                        post["service"], post["user"])
+                    dms = self.api.creator_dms(post["service"], post["user"])
                     try:
                         dms = dms["props"]["dms"]
                     except Exception:
@@ -112,15 +120,15 @@ class KemonopartyExtractor(Extractor):
             if announcements is not None:
                 if announcements is True:
                     announcements = self.api.creator_announcements(
-                        post["service"], post["user"])
+                        post["service"], post["user"]
+                    )
                 post["announcements"] = announcements
 
             files = []
             hashes = set()
             post_archives = post["archives"] = []
 
-            for file in itertools.chain.from_iterable(
-                    g(post) for g in generators):
+            for file in itertools.chain.from_iterable(g(post) for g in generators):
                 url = file["path"]
 
                 if "\\" in url:
@@ -159,8 +167,12 @@ class KemonopartyExtractor(Extractor):
                         except Exception as exc:
                             self.log.warning(
                                 "%s: Failed to retrieve archive metadata of "
-                                "'%s' (%s: %s)", post["id"], file.get("name"),
-                                exc.__class__.__name__, exc)
+                                "'%s' (%s: %s)",
+                                post["id"],
+                                file.get("name"),
+                                exc.__class__.__name__,
+                                exc,
+                            )
                             post_archives.append(file.copy())
                     else:
                         post_archives.append(file.copy())
@@ -178,10 +190,11 @@ class KemonopartyExtractor(Extractor):
     def login(self):
         username, password = self._get_auth_info()
         if username:
-            self.cookies_update(self._login_impl(
-                (username, self.cookies_domain), password))
+            self.cookies_update(
+                self._login_impl((username, self.cookies_domain), password)
+            )
 
-    @cache(maxage=3650*86400, keyarg=1)
+    @cache(maxage=3650 * 86400, keyarg=1)
     def _login_impl(self, username, password):
         username = username[0]
         self.log.info("Logging in as %s", username)
@@ -219,9 +232,9 @@ class KemonopartyExtractor(Extractor):
         if filetypes is None:
             return (self._attachments, self._file, self._inline)
         genmap = {
-            "file"       : self._file,
+            "file": self._file,
             "attachments": self._attachments,
-            "inline"     : self._inline,
+            "inline": self._inline,
         }
         if isinstance(filetypes, str):
             filetypes = filetypes.split(",")
@@ -234,14 +247,16 @@ class KemonopartyExtractor(Extractor):
 
     def _revisions(self, posts):
         return itertools.chain.from_iterable(
-            self._revisions_post(post) for post in posts)
+            self._revisions_post(post) for post in posts
+        )
 
     def _revisions_post(self, post):
         post["revision_id"] = 0
 
         try:
             revs = self.api.creator_post_revisions(
-                post["service"], post["user"], post["id"])
+                post["service"], post["user"], post["id"]
+            )
         except exception.HttpError:
             post["revision_hash"] = self._revision_hash(post)
             post["revision_index"] = 1
@@ -302,12 +317,12 @@ class KemonopartyExtractor(Extractor):
 
 
 def _validate(response):
-    return (response.headers["content-length"] != "9" or
-            response.content != b"not found")
+    return response.headers["content-length"] != "9" or response.content != b"not found"
 
 
 class KemonopartyUserExtractor(KemonopartyExtractor):
     """Extractor for all posts from a kemono.su user listing"""
+
     subcategory = "user"
     pattern = USER_PATTERN + r"/?(?:\?([^#]+))?(?:$|\?|#)"
     example = "https://kemono.su/SERVICE/user/12345"
@@ -327,31 +342,32 @@ class KemonopartyUserExtractor(KemonopartyExtractor):
 
         _, _, service, creator_id, query = self.groups
         params = text.parse_query(query)
-        return endpoint(service, creator_id,
-                        params.get("o"), params.get("q"), params.get("tag"))
+        return endpoint(
+            service, creator_id, params.get("o"), params.get("q"), params.get("tag")
+        )
 
-    def _posts_legacy_plus(self, service, creator_id,
-                           offset=0, query=None, tags=None):
+    def _posts_legacy_plus(self, service, creator_id, offset=0, query=None, tags=None):
         for post in self.api.creator_posts_legacy(
-                service, creator_id, offset, query, tags):
-            yield self.api.creator_post(
-                service, creator_id, post["id"])["post"]
+            service, creator_id, offset, query, tags
+        ):
+            yield self.api.creator_post(service, creator_id, post["id"])["post"]
 
 
 class KemonopartyPostsExtractor(KemonopartyExtractor):
     """Extractor for kemono.su post listings"""
+
     subcategory = "posts"
     pattern = BASE_PATTERN + r"/posts()()(?:/?\?([^#]+))?"
     example = "https://kemono.su/posts"
 
     def posts(self):
         params = text.parse_query(self.groups[4])
-        return self.api.posts(
-            params.get("o"), params.get("q"), params.get("tag"))
+        return self.api.posts(params.get("o"), params.get("q"), params.get("tag"))
 
 
 class KemonopartyPostExtractor(KemonopartyExtractor):
     """Extractor for a single kemono.su post"""
+
     subcategory = "post"
     pattern = USER_PATTERN + r"/post/([^/?#]+)(/revisions?(?:/(\d*))?)?"
     example = "https://kemono.su/SERVICE/user/12345/post/12345"
@@ -381,13 +397,15 @@ class KemonopartyPostExtractor(KemonopartyExtractor):
 
 class KemonopartyDiscordExtractor(KemonopartyExtractor):
     """Extractor for kemono.su discord servers"""
+
     subcategory = "discord"
-    directory_fmt = ("{category}", "discord", "{server}",
-                     "{channel_name|channel}")
+    directory_fmt = ("{category}", "discord", "{server}", "{channel_name|channel}")
     filename_fmt = "{id}_{num:>02}_{filename}.{extension}"
     archive_fmt = "discord_{server}_{id}_{num}"
-    pattern = (BASE_PATTERN + r"/discord/server/(\d+)"
-               r"(?:/(?:channel/)?(\d+)(?:#(.+))?|#(.+))")
+    pattern = (
+        BASE_PATTERN + r"/discord/server/(\d+)"
+        r"(?:/(?:channel/)?(\d+)(?:#(.+))?|#(.+))"
+    )
     example = "https://kemono.su/discord/server/12345/12345"
 
     def items(self):
@@ -414,7 +432,8 @@ class KemonopartyDiscordExtractor(KemonopartyExtractor):
 
         find_inline = re.compile(
             r"https?://(?:cdn\.discordapp.com|media\.discordapp\.net)"
-            r"(/[A-Za-z0-9-._~:/?#\[\]@!$&'()*+,;%=]+)").findall
+            r"(/[A-Za-z0-9-._~:/?#\[\]@!$&'()*+,;%=]+)"
+        ).findall
         find_hash = re.compile(HASH_PATTERN).match
 
         posts = self.api.discord_channel(channel_id)
@@ -431,8 +450,14 @@ class KemonopartyDiscordExtractor(KemonopartyExtractor):
                 attachment["type"] = "attachment"
                 append(attachment)
             for path in find_inline(post["content"] or ""):
-                append({"path": "https://cdn.discordapp.com" + path,
-                        "name": path, "type": "inline", "hash": ""})
+                append(
+                    {
+                        "path": "https://cdn.discordapp.com" + path,
+                        "name": path,
+                        "type": "inline",
+                        "hash": "",
+                    }
+                )
 
             post["channel_name"] = channel_name
             post["date"] = self._parse_datetime(post["published"])
@@ -464,13 +489,15 @@ class KemonopartyDiscordServerExtractor(KemonopartyExtractor):
         server_id = self.groups[2]
         for channel in self.api.discord_server(server_id):
             url = "{}/discord/server/{}/{}#{}".format(
-                self.root, server_id, channel["id"], channel["name"])
+                self.root, server_id, channel["id"], channel["name"]
+            )
             channel["_extractor"] = KemonopartyDiscordExtractor
             yield Message.Queue, url, channel
 
 
 class KemonopartyFavoriteExtractor(KemonopartyExtractor):
     """Extractor for kemono.su favorites"""
+
     subcategory = "favorite"
     pattern = BASE_PATTERN + r"/(?:account/)?favorites()()(?:/?\?([^#]+))?"
     example = "https://kemono.su/account/favorites/artists"
@@ -490,19 +517,16 @@ class KemonopartyFavoriteExtractor(KemonopartyExtractor):
 
             if not sort:
                 sort = "updated"
-            users.sort(key=lambda x: x[sort] or util.NONE,
-                       reverse=(order == "desc"))
+            users.sort(key=lambda x: x[sort] or util.NONE, reverse=(order == "desc"))
 
             for user in users:
                 service = user["service"]
                 if service == "discord":
                     user["_extractor"] = KemonopartyDiscordServerExtractor
-                    url = "{}/discord/server/{}".format(
-                        self.root, user["id"])
+                    url = "{}/discord/server/{}".format(self.root, user["id"])
                 else:
                     user["_extractor"] = KemonopartyUserExtractor
-                    url = "{}/{}/user/{}".format(
-                        self.root, service, user["id"])
+                    url = "{}/{}/user/{}".format(self.root, service, user["id"])
                 yield Message.Queue, url, user
 
         elif type == "post":
@@ -510,17 +534,17 @@ class KemonopartyFavoriteExtractor(KemonopartyExtractor):
 
             if not sort:
                 sort = "faved_seq"
-            posts.sort(key=lambda x: x[sort] or util.NONE,
-                       reverse=(order == "desc"))
+            posts.sort(key=lambda x: x[sort] or util.NONE, reverse=(order == "desc"))
 
             for post in posts:
                 post["_extractor"] = KemonopartyPostExtractor
                 url = "{}/{}/user/{}/post/{}".format(
-                    self.root, post["service"], post["user"], post["id"])
+                    self.root, post["service"], post["user"], post["id"]
+                )
                 yield Message.Queue, url, post
 
 
-class KemonoAPI():
+class KemonoAPI:
     """Interface for the Kemono API v1.1.0
 
     https://kemono.su/documentation/api
@@ -539,14 +563,14 @@ class KemonoAPI():
         endpoint = "/file/" + file_hash
         return self._call(endpoint)
 
-    def creator_posts(self, service, creator_id,
-                      offset=0, query=None, tags=None):
+    def creator_posts(self, service, creator_id, offset=0, query=None, tags=None):
         endpoint = "/{}/user/{}".format(service, creator_id)
         params = {"q": query, "tag": tags, "o": offset}
         return self._pagination(endpoint, params, 50)
 
-    def creator_posts_legacy(self, service, creator_id,
-                             offset=0, query=None, tags=None):
+    def creator_posts_legacy(
+        self, service, creator_id, offset=0, query=None, tags=None
+    ):
         endpoint = "/{}/user/{}/posts".format(service, creator_id)
         params = {"o": offset, "tag": tags, "q": query}
         return self._pagination(endpoint, params, 50, "results")
@@ -568,13 +592,11 @@ class KemonoAPI():
         return self._call(endpoint)
 
     def creator_post_comments(self, service, creator_id, post_id):
-        endpoint = "/{}/user/{}/post/{}/comments".format(
-            service, creator_id, post_id)
+        endpoint = "/{}/user/{}/post/{}/comments".format(service, creator_id, post_id)
         return self._call(endpoint)
 
     def creator_post_revisions(self, service, creator_id, post_id):
-        endpoint = "/{}/user/{}/post/{}/revisions".format(
-            service, creator_id, post_id)
+        endpoint = "/{}/user/{}/post/{}/revisions".format(service, creator_id, post_id)
         return self._call(endpoint)
 
     def creator_profile(self, service, creator_id):

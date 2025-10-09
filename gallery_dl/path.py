@@ -256,7 +256,11 @@ class PathFormat():
                     break
             else:
                 fmt = self.filename_formatter
-            return self.clean_path(self.clean_segment(fmt(kwdict)))
+
+            _fmt = fmt(kwdict)
+            _clean_seg = self.clean_segment(_fmt)
+            _cleaned = self.clean_path(_clean_seg)
+            return _cleaned
         except Exception as exc:
             raise exception.FilenameFormatError(exc)
 
