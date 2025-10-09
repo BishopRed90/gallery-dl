@@ -11,7 +11,7 @@ __tests__ = (
 {
     "#url"  : "https://www.bilibili.com/opus/988425412565532689",
     "#class": bilibili.BilibiliArticleExtractor,
-    "#urls" : (
+    "#results": (
         "http://i0.hdslb.com/bfs/new_dyn/311264c4dcf45261f7d7a7fe451b05b9405279279.png",
         "http://i0.hdslb.com/bfs/new_dyn/b60d8bc6996529613d617443a12c0a93405279279.png",
         "http://i0.hdslb.com/bfs/new_dyn/d4494543210d9eee5310e11dc62581e4405279279.png",
@@ -39,7 +39,7 @@ __tests__ = (
     "#url"    : "https://www.bilibili.com/opus/977981688469520405",
     "#comment": "'module_top' file (#6687)",
     "#class"  : bilibili.BilibiliArticleExtractor,
-    "#urls"   : (
+    "#results": (
         "http://i0.hdslb.com/bfs/new_dyn/c74018e8272c56a6c28a1a1dc3c586311242656443.jpg",
     ),
 
@@ -51,6 +51,18 @@ __tests__ = (
     "size"     : 115.80999755859375,
     "id"       : "977981688469520405",
     "username" : "诗月饼",
+},
+
+{
+    "#url"     : "https://www.bilibili.com/opus/1047501858770255875",
+    "#comment" : "blocked/paid article (#7880)",
+    "#class"   : bilibili.BilibiliArticleExtractor,
+    "#count"   : 0,
+    "#log"     : """\
+1047501858770255875: Blocked Article
+乌龙茶专属动态
+加入当前UP主的6元档包月充电即可解锁观看\
+""",
 },
 
 {

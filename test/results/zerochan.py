@@ -46,6 +46,13 @@ __tests__ = (
 },
 
 {
+    "#url"     : "https://www.zerochan.net/non_existant_tag",
+    "#comment" : "handle HttpError exception (#8313)",
+    "#class"   : zerochan.ZerochanTagExtractor,
+    "#count"   : 0,
+},
+
+{
     "#url"     : "https://www.zerochan.net/2920445",
     "#category": ("booru", "zerochan", "image"),
     "#class"   : zerochan.ZerochanImageExtractor,
@@ -119,7 +126,7 @@ __tests__ = (
     "#url"     : "https://www.zerochan.net/4233756",
     "#category": ("booru", "zerochan", "image"),
     "#class"   : zerochan.ZerochanImageExtractor,
-    "#urls"    : "https://static.zerochan.net/DRAGON.BALL.full.4233756.jpg",
+    "#results" : "https://static.zerochan.net/DRAGON.BALL.full.4233756.jpg",
     "#options" : {"tags": True},
 
     "author"   : "Raydash",
@@ -181,7 +188,7 @@ __tests__ = (
     "#url"     : "https://www.zerochan.net/4233756",
     "#class"   : zerochan.ZerochanImageExtractor,
     "#auth"    : False,
-    "#urls"    : "https://static.zerochan.net/DRAGON.BALL.full.4233756.jpg",
+    "#results" : "https://static.zerochan.net/DRAGON.BALL.full.4233756.jpg",
 
     "source"   : "https://x.com/Raydash30/status/1766012730769862774",
     "tags"     : [
@@ -339,6 +346,22 @@ __tests__ = (
         "Source:Key Visual",
         "Source:Official Art",
     ],
+},
+
+{
+    "#url"     : "https://www.zerochan.net/1",
+    "#category": ("booru", "zerochan", "image"),
+    "#class"   : zerochan.ZerochanImageExtractor,
+    "#count"   : 0,
+    "#log"     : "'deleted'",
+},
+
+{
+    "#url"     : "https://www.zerochan.net/9876540",
+    "#category": ("booru", "zerochan", "image"),
+    "#class"   : zerochan.ZerochanImageExtractor,
+    "#count"   : 0,
+    "#log"     : "'Not found'",
 },
 
 )

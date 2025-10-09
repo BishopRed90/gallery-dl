@@ -12,7 +12,24 @@ __tests__ = (
     "#url"     : "https://jpg4.su/img/funnymeme.LecXGS",
     "#category": ("chevereto", "jpgfish", "image"),
     "#class"   : chevereto.CheveretoImageExtractor,
-    "#urls"        : "https://simp3.jpg5.su/images/funnymeme.jpg",
+    "#results"     : "https://simp3.jpg5.su/images/funnymeme.jpg",
+    "#sha1_content": "098e5e9b17ad634358426e0ffd1c93871474d13c",
+
+    "album"    : "",
+    "date"     : "dt:2022-06-05 03:24:25",
+    "extension": "jpg",
+    "filename" : "funnymeme",
+    "id"       : "LecXGS",
+    "url"      : "https://simp3.jpg5.su/images/funnymeme.jpg",
+    "user"     : "exearco",
+},
+
+{
+    "#url"     : "https://jpg6.su/img/LecXGS/",
+    "#comment" : "image ID without name (#8307)",
+    "#category": ("chevereto", "jpgfish", "image"),
+    "#class"   : chevereto.CheveretoImageExtractor,
+    "#results"     : "https://simp3.jpg5.su/images/funnymeme.jpg",
     "#sha1_content": "098e5e9b17ad634358426e0ffd1c93871474d13c",
 
     "album"    : "",
@@ -66,6 +83,12 @@ __tests__ = (
 
 {
     "#url"     : "https://jpg.church/img/funnymeme.LecXGS",
+    "#category": ("chevereto", "jpgfish", "image"),
+    "#class"   : chevereto.CheveretoImageExtractor,
+},
+
+{
+    "#url"     : "https://www.jpg6.su/img/funnymeme.LecXGS",
     "#category": ("chevereto", "jpgfish", "image"),
     "#class"   : chevereto.CheveretoImageExtractor,
 },
