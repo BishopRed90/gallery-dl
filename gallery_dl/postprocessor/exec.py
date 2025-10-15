@@ -15,6 +15,7 @@ import os
 
 
 if util.WINDOWS:
+
     def quote(s):
         s = s.replace('"', '\\"')
         return f'"{s}"'
@@ -23,7 +24,6 @@ else:
 
 
 class ExecPP(PostProcessor):
-
     def __init__(self, job, options):
         PostProcessor.__init__(self, job)
 
@@ -112,8 +112,9 @@ class ExecPP(PostProcessor):
 
     def _exec(self, args, shell):
         if retcode := self._popen(args, shell).wait():
-            self.log.warning("'%s' returned with non-zero exit status (%d)",
-                             args, retcode)
+            self.log.warning(
+                "'%s' returned with non-zero exit status (%d)", args, retcode
+            )
         return retcode
 
     def _popen(self, args, shell):
