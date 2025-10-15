@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Copyright 2022-2023 Mike Fährmann
+# Copyright 2022-2025 Mike Fährmann
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -61,7 +61,8 @@ class BunkrAlbumExtractor(LolisafeAlbumExtractor):
     category = "bunkr"
     root = "https://bunkr.si"
     root_dl = "https://get.bunkrr.su"
-    archive_fmt = "{album_id}_{id|id_url}"
+    root_api = "https://apidl.bunkr.ru"
+    archive_fmt = "{album_id}_{id|id_url|slug}"
     pattern = BASE_PATTERN + r"/a/([^/?#]+)"
     example = "https://bunkr.si/a/ID"
 
@@ -76,9 +77,9 @@ class BunkrAlbumExtractor(LolisafeAlbumExtractor):
 
         endpoint = self.config("endpoint")
         if not endpoint:
-            endpoint = self.root_dl + "/api/_001"
+            endpoint = self.root_api + "/api/_001_v2"
         elif endpoint[0] == "/":
-            endpoint = self.root_dl + endpoint
+            endpoint = self.root_api + endpoint
 
         self.endpoint = endpoint
         self.offset = 0
@@ -123,7 +124,7 @@ class BunkrAlbumExtractor(LolisafeAlbumExtractor):
                     pass
                 else:
                     if not DOMAINS:
-                        raise exception.StopExtraction(
+                        raise exception.AbortExtraction(
                             "All Bunkr domains require solving a CF challenge")
 
             # select alternative domain
@@ -133,13 +134,13 @@ class BunkrAlbumExtractor(LolisafeAlbumExtractor):
 
     def fetch_album(self, album_id):
         # album metadata
-        page = self.request(self.root + "/a/" + album_id).text
+        page = self.request(f"{self.root}/a/{album_id}?advanced=1").text
         title = text.unescape(text.unescape(text.extr(
             page, 'property="og:title" content="', '"')))
 
         # files
-        items = list(text.extract_iter(
-            page, '<div class="grid-images_box', "</a>"))
+        items = text.extr(
+            page, "window.albumFiles = [", "</script>").split("\n},\n")
 
         return self._extract_files(items), {
             "album_id"   : album_id,
@@ -155,48 +156,42 @@ class BunkrAlbumExtractor(LolisafeAlbumExtractor):
 
         for item in items:
             try:
-                url = text.unescape(text.extr(item, ' href="', '"'))
-                if url[0] == "/":
-                    url = self.root + url
+                data_id = text.extr(item, " id: ", ",").strip()
+                file = self._extract_file(data_id)
 
-                file = self._extract_file(url)
-                info = text.split_html(item)
-                if not file["name"]:
-                    file["name"] = info[-3]
-                file["size"] = info[-2]
-                file["date"] = text.parse_datetime(
-                    info[-1], "%H:%M:%S %d/%m/%Y")
+                file["name"] = util.json_loads(text.extr(
+                    item, 'original:', ',\n').replace("\\'", "'"))
+                file["slug"] = util.json_loads(text.extr(
+                    item, 'slug: ', ',\n').replace("\\'", "'"))
+                file["uuid"] = text.extr(
+                    item, 'name: "', ".")
+                file["size"] = text.parse_int(text.extr(
+                    item, "size:  ", " ,\n"))
+                file["date"] = text.parse_datetime(text.extr(
+                    item, 'timestamp: "', '"'), "%H:%M:%S %d/%m/%Y")
 
                 yield file
-            except exception.StopExtraction:
+            except exception.ControlException:
                 raise
             except Exception as exc:
                 self.log.error("%s: %s", exc.__class__.__name__, exc)
-                self.log.debug("", exc_info=exc)
+                self.log.debug("%s", item, exc_info=exc)
 
-    def _extract_file(self, webpage_url):
-        page = self.request(webpage_url).text
-        data_id = text.extr(page, 'data-file-id="', '"')
-        referer = self.root_dl + "/file/" + data_id
-
+    def _extract_file(self, data_id):
+        referer = f"{self.root_dl}/file/{data_id}"
         headers = {"Referer": referer, "Origin": self.root_dl}
-        data = self.request(self.endpoint, method="POST", headers=headers,
-                            json={"id": data_id}).json()
+        data = self.request_json(self.endpoint, method="POST", headers=headers,
+                                 json={"id": data_id})
 
         if data.get("encrypted"):
-            key = "SECRET_KEY_{}".format(data["timestamp"] // 3600)
+            key = f"SECRET_KEY_{data['timestamp'] // 3600}"
             file_url = util.decrypt_xor(data["url"], key.encode())
         else:
             file_url = data["url"]
 
-        file_name = text.extr(page, "<h1", "<").rpartition(">")[2]
-        fallback = text.extr(page, 'property="og:url" content="', '"')
-
         return {
             "file"          : file_url,
-            "name"          : text.unescape(file_name),
             "id_url"        : data_id,
-            "_fallback"     : (fallback,) if fallback else (),
             "_http_headers" : {"Referer": referer},
             "_http_validate": self._validate,
         }
@@ -221,7 +216,13 @@ class BunkrMediaExtractor(BunkrAlbumExtractor):
 
     def fetch_album(self, album_id):
         try:
-            file = self._extract_file(self.root + album_id)
+            page = self.request(f"{self.root}{album_id}").text
+            data_id = text.extr(page, 'data-file-id="', '"')
+            file = self._extract_file(data_id)
+            file["name"] = text.unquote(text.unescape(text.extr(
+                page, "<h1", "<").rpartition(">")[2]))
+            file["slug"] = album_id.rpartition("/")[2]
+            file["uuid"] = text.extr(page, "/thumbs/", ".")
         except Exception as exc:
             self.log.error("%s: %s", exc.__class__.__name__, exc)
             return (), {}

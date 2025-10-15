@@ -17,7 +17,6 @@ jobs:
       fail-fast: false
       matrix:
         python-version:
-        - "3.7"
         - "3.8"
         - "3.9"
         - "3.10"
@@ -27,14 +26,14 @@ jobs:
         - "pypy3.9"
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - name: Check file permissions
       run: |
         if [[ "$(find ./gallery_dl -type f -not -perm 644)" ]]; then exit 1; fi
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
 
@@ -46,10 +45,7 @@ jobs:
     - name: Install yt-dlp
       run: |
         case "${{ matrix.python-version }}" in
-            3.4|3.5)
-                # don't install yt-dlp
-                ;;
-            3.6|3.7|3.8)
+            3.8)
                 # install from PyPI
                 pip install yt-dlp
                 ;;
@@ -61,14 +57,7 @@ jobs:
 
     - name: Lint with flake8
       run: |
-        case "${{ matrix.python-version }}" in
-            3.4|3.5|3.6|3.7)
-                flake8 --extend-exclude scripts/export_tests.py,scripts/pyprint.py .
-                ;;
-            *)
-                flake8 .
-                ;;
-        esac
+        flake8 .
 
     - name: Run tests
       run: |

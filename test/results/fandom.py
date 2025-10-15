@@ -19,7 +19,7 @@ __tests__ = (
     "#url"     : "https://mushishi.fandom.com/wiki/Yahagi",
     "#category": ("wikimedia", "fandom-mushishi", "article"),
     "#class"   : wikimedia.WikimediaArticleExtractor,
-    "#urls"    : "https://static.wikia.nocookie.net/mushi-shi/images/f/f8/Yahagi.png/revision/latest?cb=20150128052255",
+    "#results" : "https://static.wikia.nocookie.net/mushi-shi/images/f/f8/Yahagi.png/revision/latest?cb=20150128052255",
 
     "bitdepth"      : 8,
     "canonicaltitle": "File:Yahagi.png",
@@ -35,12 +35,10 @@ __tests__ = (
     "extension"     : "png",
     "extmetadata"   : {
         "DateTime": {
-            "hidden": "",
             "source": "mediawiki-metadata",
             "value": "2015-01-28T05:22:55Z",
         },
         "ObjectName": {
-            "hidden": "",
             "source": "mediawiki-metadata",
             "value": "Yahagi",
         },
@@ -97,13 +95,26 @@ __tests__ = (
     "#comment" : "non-English language prefix (#6370)",
     "#category": ("wikimedia", "fandom-discogs", "file"),
     "#class"   : wikimedia.WikimediaArticleExtractor,
-    "#urls"    : "https://static.wikia.nocookie.net/discogs/images/a/ab/CH-0430D2.jpg/revision/latest?cb=20241007150151&path-prefix=zh",
+    "#results" : "https://static.wikia.nocookie.net/discogs/images/a/ab/CH-0430D2.jpg/revision/latest?cb=20241007150151&path-prefix=zh",
 },
 
 {
     "#url"     : "https://projectsekai.fandom.com/wiki/Project_SEKAI_Wiki",
     "#category": ("wikimedia", "fandom-projectsekai", "article"),
     "#class"   : wikimedia.WikimediaArticleExtractor,
+},
+
+{
+    "#url"     : "https://youtube.fandom.com/wiki/File:(500)_Montage_-_Reason_2_Die_Awakening",
+    "#comment" : "file without extension",
+    "#category": ("wikimedia", "fandom-youtube", "file"),
+    "#class"   : wikimedia.WikimediaArticleExtractor,
+
+    "extension": "",
+    "filename" : "(500) Montage - Reason 2 Die Awakening",
+    "page"     : "File:(500)_Montage_-_Reason_2_Die_Awakening",
+    "sha1"     : "6819869792d85927d60cc0a0cdc9e33dbd446731",
+    "size"     : 81905,
 },
 
 {

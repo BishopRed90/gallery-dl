@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-# Copyright 2022-2023 Mike Fährmann
+# Copyright 2022-2025 Mike Fährmann
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -12,7 +12,6 @@ from .booru import BooruExtractor
 from ..cache import cache
 from .. import text, util, exception
 import collections
-import re
 
 BASE_PATTERN = r"(?:https?://)?(?:www\.)?zerochan\.net"
 
@@ -24,9 +23,10 @@ class ZerochanExtractor(BooruExtractor):
     filename_fmt = "{id}.{extension}"
     archive_fmt = "{id}"
     page_start = 1
-    per_page = 250
+    per_page = 200
     cookies_domain = ".zerochan.net"
     cookies_names = ("z_id", "z_hash")
+    useragent = util.USERAGENT
     request_interval = (0.5, 1.5)
 
     def login(self):
@@ -56,15 +56,16 @@ class ZerochanExtractor(BooruExtractor):
             "login"   : "Login",
         }
 
-        response = self.request(url, method="POST", headers=headers, data=data)
+        response = self.request(
+            url, method="POST", headers=headers, data=data, expected=(500,))
         if not response.history:
             raise exception.AuthenticationError()
 
         return response.cookies
 
     def _parse_entry_html(self, entry_id):
-        url = "{}/{}".format(self.root, entry_id)
-        page = self.request(url).text
+        url = f"{self.root}/{entry_id}"
+        page = self.request(url, expected=(500,)).text
 
         try:
             jsonld = self._extract_jsonld(page)
@@ -102,7 +103,7 @@ class ZerochanExtractor(BooruExtractor):
         return data
 
     def _parse_entry_api(self, entry_id):
-        url = "{}/{}?json".format(self.root, entry_id)
+        url = f"{self.root}/{entry_id}?json"
         txt = self.request(url).text
         try:
             item = util.json_loads(txt)
@@ -127,7 +128,7 @@ class ZerochanExtractor(BooruExtractor):
         return data
 
     def _parse_json(self, txt):
-        txt = re.sub(r"[\x00-\x1f\x7f]", "", txt)
+        txt = util.re(r"[\x00-\x1f\x7f]").sub("", txt)
         main, _, tags = txt.partition('tags": [')
 
         item = {}
@@ -174,8 +175,7 @@ class ZerochanTagExtractor(ZerochanExtractor):
             self.posts = self.posts_api
             self.session.headers["User-Agent"] = util.USERAGENT
 
-        exts = self.config("extensions")
-        if exts:
+        if exts := self.config("extensions"):
             if isinstance(exts, str):
                 exts = exts.split(",")
             self.exts = exts
@@ -188,12 +188,19 @@ class ZerochanTagExtractor(ZerochanExtractor):
 
     def posts_html(self):
         url = self.root + "/" + self.search_tag
-        params = text.parse_query(self.query)
-        params["p"] = text.parse_int(params.get("p"), self.page_start)
         metadata = self.config("metadata")
 
+        params = text.parse_query(self.query, empty=True)
+        params["p"] = text.parse_int(params.get("p"), self.page_start)
+
         while True:
-            page = self.request(url, params=params).text
+            try:
+                page = self.request(
+                    url, params=params, expected=(500,)).text
+            except exception.HttpError as exc:
+                if exc.status == 404:
+                    return
+                raise
             thumbs = text.extr(page, '<ul id="thumbs', '</ul>')
             extr = text.extract_from(thumbs)
 
@@ -225,21 +232,27 @@ class ZerochanTagExtractor(ZerochanExtractor):
     def posts_api(self):
         url = self.root + "/" + self.search_tag
         metadata = self.config("metadata")
-        params = {
-            "json": "1",
-            "l"   : self.per_page,
-            "p"   : self.page_start,
-        }
+
+        params = text.parse_query(self.query, empty=True)
+        params["p"] = text.parse_int(params.get("p"), self.page_start)
+        params.setdefault("l", self.per_page)
+        params["json"] = "1"
 
         while True:
-            response = self.request(url, params=params, allow_redirects=False)
+            try:
+                response = self.request(
+                    url, params=params, allow_redirects=False)
+            except exception.HttpError as exc:
+                if exc.status == 404:
+                    return
+                raise
 
             if response.status_code >= 300:
                 url = text.urljoin(self.root, response.headers["location"])
                 self.log.warning("HTTP redirect to %s", url)
                 if self.config("redirects"):
                     continue
-                raise exception.StopExtraction()
+                raise exception.AbortExtraction()
 
             data = response.json()
             try:
@@ -276,12 +289,18 @@ class ZerochanImageExtractor(ZerochanExtractor):
     pattern = BASE_PATTERN + r"/(\d+)"
     example = "https://www.zerochan.net/12345"
 
-    def __init__(self, match):
-        ZerochanExtractor.__init__(self, match)
-        self.image_id = match.group(1)
-
     def posts(self):
-        post = self._parse_entry_html(self.image_id)
+        image_id = self.groups[0]
+
+        try:
+            post = self._parse_entry_html(image_id)
+        except exception.HttpError as exc:
+            if exc.status in (404, 410):
+                if msg := text.extr(exc.response.text, "<h2>", "<"):
+                    self.log.warning(f"'{msg}'")
+                return ()
+            raise
+
         if self.config("metadata"):
-            post.update(self._parse_entry_api(self.image_id))
+            post.update(self._parse_entry_api(image_id))
         return (post,)

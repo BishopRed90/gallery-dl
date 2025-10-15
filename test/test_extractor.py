@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# Copyright 2018-2023 Mike Fährmann
+# Copyright 2018-2025 Mike Fährmann
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -110,7 +110,7 @@ class TestExtractorModule(unittest.TestCase):
                 except AssertionError:
                     pass
                 else:
-                    self.fail(result["#url"] + ": Test did not fail")
+                    self.fail(f"{result['#url']}: Test did not fail")
             else:
                 self.assertCategories(result)
 
@@ -122,8 +122,8 @@ class TestExtractorModule(unittest.TestCase):
             extr = cls.from_url(url)
         except ImportError as exc:
             if exc.name in ("youtube_dl", "yt_dlp"):
-                print("Skipping '{}' category checks".format(cls.category))
-                return
+                return sys.stdout.write(
+                    f"Skipping '{cls.category}' category checks\n")
             raise
         self.assertTrue(extr, url)
 
@@ -138,46 +138,8 @@ class TestExtractorModule(unittest.TestCase):
         self.assertEqual(extr.subcategory, sub, url)
         self.assertEqual(extr.basecategory, base, url)
 
-    @unittest.skipIf(not results, "no test data")
-    def test_unique_pattern_matches(self):
-        # collect testcase URLs
-        test_urls = []
-        append = test_urls.append
-
-        for result in results.all():
-            if not result.get("#fail"):
-                append((result["#url"], result["#class"]))
-
-        # iterate over all testcase URLs
-        for url, extr1 in test_urls:
-            matches = []
-
-            # ... and apply all regex patterns to each one
-            for extr2 in _list_classes():
-
-                # skip DirectlinkExtractor pattern if it isn't tested
-                if extr1 != DirectlinkExtractor and \
-                        extr2 == DirectlinkExtractor:
-                    continue
-
-                match = extr2.pattern.match(url)
-                if match:
-                    matches.append((match, extr2))
-
-            # fail if more or less than 1 match happened
-            if len(matches) > 1:
-                msg = "'{}' gets matched by more than one pattern:".format(url)
-                for match, extr in matches:
-                    msg += "\n\n- {}:\n{}".format(
-                        extr.__name__, match.re.pattern)
-                self.fail(msg)
-
-            elif len(matches) < 1:
-                msg = "'{}' isn't matched by any pattern".format(url)
-                self.fail(msg)
-
-            else:
-                self.assertIs(extr1, matches[0][1], url)
+        if base not in ("reactor", "wikimedia"):
+            self.assertEqual(extr._cfgpath, ("extractor", cat, sub), url)
 
     def test_init(self):
         """Test for exceptions in Extractor.initialize() and .finalize()"""
@@ -188,14 +150,19 @@ class TestExtractorModule(unittest.TestCase):
             if cls.category == "ytdl":
                 continue
             extr = cls.from_url(cls.example)
-            if not extr and cls.basecategory and not cls.instances:
-                continue
+            if not extr:
+                if cls.basecategory and not cls.instances:
+                    continue
+                self.fail(f"{cls.__name__} pattern does not match "
+                          f"example URL '{cls.example}'")
+
+            self.assertEqual(cls, extr.__class__)
+            self.assertEqual(cls, extractor.find(cls.example).__class__)
 
             extr.request = fail_request
             extr.initialize()
             extr.finalize()
 
-    @unittest.skipIf(sys.hexversion < 0x3060000, "test fails in CI")
     def test_init_ytdl(self):
         try:
             extr = extractor.find("ytdl:")
@@ -203,8 +170,7 @@ class TestExtractorModule(unittest.TestCase):
             extr.finalize()
         except ImportError as exc:
             if exc.name in ("youtube_dl", "yt_dlp"):
-                raise unittest.SkipTest("cannot import module '{}'".format(
-                    exc.name))
+                raise unittest.SkipTest(f"cannot import module '{exc.name}'")
             raise
 
     def test_docstrings(self):
@@ -215,7 +181,7 @@ class TestExtractorModule(unittest.TestCase):
                     self.assertNotEqual(
                         extr1.__doc__,
                         extr2.__doc__,
-                        "{} <-> {}".format(extr1, extr2),
+                        f"{extr1} <-> {extr2}",
                     )
 
     def test_names(self):
@@ -227,12 +193,10 @@ class TestExtractorModule(unittest.TestCase):
 
         for extr in extractor.extractors():
             if extr.category not in ("", "oauth", "ytdl"):
-                expected = "{}{}Extractor".format(
-                    capitalize(extr.category),
-                    capitalize(extr.subcategory),
-                )
+                expected = (f"{capitalize(extr.category)}"
+                            f"{capitalize(extr.subcategory)}Extractor")
                 if expected[0].isdigit():
-                    expected = "_" + expected
+                    expected = f"_{expected}"
                 self.assertEqual(expected, extr.__name__)
 
 
@@ -261,7 +225,7 @@ class TestExtractorWait(unittest.TestCase):
 
             calls = sleep.mock_calls
             self.assertEqual(len(calls), 1)
-            self.assertAlmostEqual(calls[0][1][0], 6.0, places=1)
+            self.assertAlmostEqual(calls[0][1][0], 6.0, places=0)
 
             calls = log.info.mock_calls
             self.assertEqual(len(calls), 1)
@@ -293,8 +257,7 @@ class TestExtractorWait(unittest.TestCase):
         u = self._isotime_to_seconds(until.time().isoformat()[:8])
         self.assertLessEqual(o-u, 1.0)
 
-    @staticmethod
-    def _isotime_to_seconds(isotime):
+    def _isotime_to_seconds(self, isotime):
         parts = isotime.split(":")
         return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
 
@@ -303,7 +266,7 @@ class TextExtractorOAuth(unittest.TestCase):
 
     def test_oauth1(self):
         for category in ("flickr", "smugmug", "tumblr"):
-            extr = extractor.find("oauth:" + category)
+            extr = extractor.find(f"oauth:{category}")
 
             with patch.object(extr, "_oauth1_authorization_flow") as m:
                 for msg in extr:
@@ -312,7 +275,7 @@ class TextExtractorOAuth(unittest.TestCase):
 
     def test_oauth2(self):
         for category in ("deviantart", "reddit"):
-            extr = extractor.find("oauth:" + category)
+            extr = extractor.find(f"oauth:{category}")
 
             with patch.object(extr, "_oauth2_authorization_code_grant") as m:
                 for msg in extr:

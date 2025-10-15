@@ -7,8 +7,8 @@
 """Extractors for https://bato.to/"""
 
 from .common import Extractor, ChapterExtractor, MangaExtractor
-from .. import text, exception
-import re
+from .. import text, util
+from ..cache import memcache
 
 BASE_PATTERN = (r"(?:https?://)?("
                 r"(?:ba|d|f|h|j|m|w)to\.to|"
@@ -87,7 +87,7 @@ class BatotoChapterExtractor(BatotoBase, ChapterExtractor):
         ChapterExtractor.__init__(self, match, False)
         self._init_root()
         self.chapter_id = self.groups[1]
-        self.gallery_url = "{}/title/0/{}".format(self.root, self.chapter_id)
+        self.page_url = f"{self.root}/title/0/{self.chapter_id}"
 
     def metadata(self, page):
         extr = text.extract_from(page)
@@ -104,9 +104,9 @@ class BatotoChapterExtractor(BatotoBase, ChapterExtractor):
             info = text.remove_html(extr('link-hover">', "</"))
         info = text.unescape(info)
 
-        match = re.match(
+        match = util.re(
             r"(?i)(?:(?:Volume|S(?:eason)?)\s*(\d+)\s+)?"
-            r"(?:Chapter|Episode)\s*(\d+)([\w.]*)", info)
+            r"(?:Chapter|Episode)\s*(\d+)([\w.]*)").match(info)
         if match:
             volume, chapter, minor = match.groups()
         else:
@@ -114,8 +114,7 @@ class BatotoChapterExtractor(BatotoBase, ChapterExtractor):
             minor = ""
 
         return {
-            "manga"         : text.unescape(manga),
-            "manga_id"      : text.parse_int(manga_id),
+            **_manga_info(self, manga_id),
             "chapter_url"   : extr(self.chapter_id + "-ch_", '"'),
             "title"         : text.unescape(text.remove_html(extr(
                 "selected>", "</option")).partition(" : ")[2]),
@@ -148,22 +147,15 @@ class BatotoMangaExtractor(BatotoBase, MangaExtractor):
         MangaExtractor.__init__(self, match, False)
         self._init_root()
         self.manga_id = self.groups[1] or self.groups[2]
-        self.manga_url = "{}/title/{}".format(self.root, self.manga_id)
+        self.page_url = f"{self.root}/title/{self.manga_id}"
 
     def chapters(self, page):
         extr = text.extract_from(page)
-
-        warning = extr(' class="alert alert-warning">', "</div><")
-        if warning:
-            raise exception.StopExtraction("'%s'", text.remove_html(warning))
-
-        data = {
-            "manga_id": text.parse_int(self.manga_id),
-            "manga"   : text.unescape(extr(
-                "<title>", "<").rpartition(" - ")[0]),
-        }
-
+        if warning := extr(' class="alert alert-warning">', "</div>"):
+            self.log.warning("'%s'", text.remove_html(warning))
         extr('<div data-hk="0-0-0-0"', "")
+        data = _manga_info(self, self.manga_id, page)
+
         results = []
         while True:
             href = extr('<a href="/title/', '"')
@@ -178,6 +170,44 @@ class BatotoMangaExtractor(BatotoBase, MangaExtractor):
             data["date"] = text.parse_datetime(
                 extr('time="', '"'), "%Y-%m-%dT%H:%M:%S.%fZ")
 
-            url = "{}/title/{}".format(self.root, href)
+            url = f"{self.root}/title/{href}"
             results.append((url, data.copy()))
         return results
+
+
+@memcache(keyarg=1)
+def _manga_info(self, manga_id, page=None):
+    if page is None:
+        url = f"{self.root}/title/{manga_id}"
+        page = self.request(url).text
+
+    props = text.extract(page, 'props="', '"', page.find(' prefix="r20" '))[0]
+    data = util.json_loads(text.unescape(props))["data"][1]
+
+    return {
+        "manga"      : data["name"][1],
+        "manga_id"   : text.parse_int(manga_id),
+        "manga_slug" : data["slug"][1],
+        "manga_date" : text.parse_timestamp(
+            data["dateCreate"][1] // 1000),
+        "manga_date_updated": text.parse_timestamp(
+            data["dateUpdate"][1] / 1000),
+        "author"     : json_list(data["authors"]),
+        "artist"     : json_list(data["artists"]),
+        "genre"      : json_list(data["genres"]),
+        "lang"       : data["tranLang"][1],
+        "lang_orig"  : data["origLang"][1],
+        "status"     : data["originalStatus"][1],
+        "published"  : data["originalPubFrom"][1],
+        "description": data["summary"][1]["code"][1],
+        "cover"      : data["urlCoverOri"][1],
+        "uploader"   : data["userId"][1],
+        "score"      : data["stat_score_avg"][1],
+    }
+
+
+def json_list(value):
+    return [
+        item[1].replace("_", " ")
+        for item in util.json_loads(value[1].replace('\\"', '"'))
+    ]

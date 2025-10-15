@@ -65,8 +65,8 @@ class ClientTransaction():
 
     @cache(maxage=36500*86400, keyarg=1)
     def _extract_indices(self, ondemand_s, extractor):
-        url = ("https://abs.twimg.com/responsive-web/client-web"
-               "/ondemand.s." + ondemand_s + "a.js")
+        url = (f"https://abs.twimg.com/responsive-web/client-web"
+               f"/ondemand.s.{ondemand_s}a.js")
         page = extractor.request(url).text
         pattern = util.re_compile(r"\(\w\[(\d\d?)\],\s*16\)")
         return [int(i) for i in pattern.findall(page)]
@@ -129,7 +129,9 @@ class ClientTransaction():
                                 keyword="obfiowerehiring", rndnum=3):
         bytes_key = self.key_bytes
 
-        now = int(time.time()) - 1682924400
+        nowf = time.time()
+        nowi = int(nowf)
+        now = nowi - 1682924400
         bytes_time = (
             (now      ) & 0xFF,  # noqa: E202
             (now >>  8) & 0xFF,  # noqa: E222
@@ -137,11 +139,10 @@ class ClientTransaction():
             (now >> 24) & 0xFF,
         )
 
-        payload = "{}!{}!{}{}{}".format(
-            method, path, now, keyword, self.animation_key)
+        payload = f"{method}!{path}!{now}{keyword}{self.animation_key}"
         bytes_hash = hashlib.sha256(payload.encode()).digest()[:16]
 
-        num = random.randrange(256)
+        num = (random.randrange(16) << 4) + int((nowf - nowi) * 16.0)
         result = bytes(
             byte ^ num
             for byte in itertools.chain(

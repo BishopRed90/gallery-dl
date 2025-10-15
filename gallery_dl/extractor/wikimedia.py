@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 # Copyright 2022 Ailothaen
-# Copyright 2024 Mike Fährmann
+# Copyright 2024-2025 Mike Fährmann
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License version 2 as
@@ -27,20 +27,30 @@ class WikimediaExtractor(BaseExtractor):
         if self.category == "wikimedia":
             self.category = self.root.split(".")[-2]
         elif self.category in ("fandom", "wikigg"):
-            self.category = "{}-{}".format(
-                self.category, self.root.partition(".")[0].rpartition("/")[2])
+            self.category = (
+                f"{self.category}-"
+                f"{self.root.partition('.')[0].rpartition('/')[2]}")
 
         self.per_page = self.config("limit", 50)
+        self.subcategories = False
+
+        if useragent := self.config_instance("useragent"):
+            self.useragent = useragent
 
     def _init(self):
-        api_path = self.config_instance("api-path")
-        if api_path:
+        if api_path := self.config_instance("api-path"):
             if api_path[0] == "/":
                 self.api_url = self.root + api_path
             else:
                 self.api_url = api_path
         else:
             self.api_url = None
+
+        # note: image revisions are different from page revisions
+        # ref:
+        # https://www.mediawiki.org/wiki/API:Revisions
+        # https://www.mediawiki.org/wiki/API:Imageinfo
+        self.image_revisions = self.config("image-revisions", 1)
 
     @cache(maxage=36500*86400, keyarg=1)
     def _search_api_path(self, root):
@@ -50,10 +60,12 @@ class WikimediaExtractor(BaseExtractor):
             response = self.request(url, method="HEAD", fatal=None)
             if response.status_code < 400:
                 return url
-        raise exception.StopExtraction("Unable to find API endpoint")
+        raise exception.AbortExtraction("Unable to find API endpoint")
 
-    @staticmethod
-    def prepare(image):
+    def prepare_info(self, info):
+        """Adjust the content of an image info object"""
+
+    def prepare_image(self, image):
         """Adjust the content of an image object"""
         image["metadata"] = {
             m["name"]: m["value"]
@@ -62,23 +74,26 @@ class WikimediaExtractor(BaseExtractor):
             m["name"]: m["value"]
             for m in image["commonmetadata"] or ()}
 
-        filename = image["canonicaltitle"]
-        image["filename"], _, image["extension"] = \
-            filename.partition(":")[2].rpartition(".")
+        text.nameext_from_url(image["canonicaltitle"].partition(":")[2], image)
         image["date"] = text.parse_datetime(
             image["timestamp"], "%Y-%m-%dT%H:%M:%SZ")
 
     def items(self):
         for info in self._pagination(self.params):
             try:
-                image = info["imageinfo"][0]
-            except LookupError:
+                images = info.pop("imageinfo")
+            except KeyError:
                 self.log.debug("Missing 'imageinfo' for %s", info)
-                continue
+                images = ()
 
-            self.prepare(image)
-            yield Message.Directory, image
-            yield Message.Url, image["url"], image
+            info["count"] = len(images)
+            self.prepare_info(info)
+            yield Message.Directory, info
+
+            for info["num"], image in enumerate(images, 1):
+                self.prepare_image(image)
+                image.update(info)
+                yield Message.Url, image["url"], image
 
         if self.subcategories:
             base = self.root + "/wiki/"
@@ -105,19 +120,18 @@ class WikimediaExtractor(BaseExtractor):
             "timestamp|user|userid|comment|canonicaltitle|url|size|"
             "sha1|mime|metadata|commonmetadata|extmetadata|bitdepth"
         )
+        params["iilimit"] = self.image_revisions
 
         while True:
-            data = self.request(url, params=params).json()
+            data = self.request_json(url, params=params)
 
             # ref: https://www.mediawiki.org/wiki/API:Errors_and_warnings
-            error = data.get("error")
-            if error:
+            if error := data.get("error"):
                 self.log.error("%s: %s", error["code"], error["info"])
                 return
             # MediaWiki will emit warnings for non-fatal mistakes such as
             # invalid parameter instead of raising an error
-            warnings = data.get("warnings")
-            if warnings:
+            if warnings := data.get("warnings"):
                 self.log.debug("MediaWiki returned warnings: %s", warnings)
 
             try:
@@ -187,6 +201,7 @@ BASE_PATTERN = WikimediaExtractor.update({
         "root": "https://azurlane.koumakan.jp",
         "pattern": r"azurlane\.koumakan\.jp",
         "api-path": "/w/api.php",
+        "useragent": "Googlebot-Image/1.0",
     },
 })
 
@@ -216,8 +231,8 @@ class WikimediaArticleExtractor(WikimediaExtractor):
             self.subcategory = prefix
 
         if prefix == "category":
-            self.subcategories = \
-                True if self.config("subcategories", True) else False
+            if self.config("subcategories", True):
+                self.subcategories = True
             self.params = {
                 "generator": "categorymembers",
                 "gcmtitle" : path,
@@ -225,21 +240,18 @@ class WikimediaArticleExtractor(WikimediaExtractor):
                 "gcmlimit" : self.per_page,
             }
         elif prefix == "file":
-            self.subcategories = False
             self.params = {
                 "titles"   : path,
             }
         else:
-            self.subcategories = False
             self.params = {
                 "generator": "images",
                 "gimlimit" : self.per_page,
                 "titles"   : path,
             }
 
-    def prepare(self, image):
-        WikimediaExtractor.prepare(image)
-        image["page"] = self.title
+    def prepare_info(self, info):
+        info["page"] = self.title
 
 
 class WikimediaWikiExtractor(WikimediaExtractor):
