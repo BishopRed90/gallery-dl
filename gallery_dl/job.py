@@ -213,6 +213,11 @@ class Job:
                 self.handle_url(url, kwdict)
             else:
                 _filtered = True
+                # TODO - Fix this so there isn't so much logging
+                logging.debug("Requested URL: %s", kwdict['_extractor'].url)
+                logging.degub("Filtered Titlename: %s", kwdict.get("_title", "No Title"))
+                logging.info("Filtered: %s", kwdict.get("filename", "No Filename"))
+
             if FLAGS.FILE is not None:
                 FLAGS.process("FILE")
 

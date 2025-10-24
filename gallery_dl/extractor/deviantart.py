@@ -898,10 +898,10 @@ class DeviantartWatchExtractor(DeviantartExtractor):
     subcategory = "watch"
     pattern = (
         r"(?:https?://)?(?:www\.)?deviantart\.com"
-        r"/(?:watch/deviations|notifications/watch)"
+        r"/(?:watch|notifications/watch)"
         r"(?:/deviations/([\w\W]+))"
     )
-    example = "https://www.deviantart.com/watch/deviations/deviations/USER"
+    example = "https://www.deviantart.com/watch/deviations/USER"
 
     def deviations(self) -> Generator[Deviation]:
         if self.user:
@@ -927,7 +927,7 @@ class DeviantartWatchSubExtractor(DeviantartExtractor):
     subcategory = "watch"
     pattern = (
         r"(?:https?://)?(?:www\.)?deviantart\.com"
-        r"/(?:notifications/watch)"
+        r"/(?:watch)"
         r"(?:/mysubscriptions/([\w\W]+))"
     )
     example = "https://www.deviantart.com/notifications/watch/mysubscriptions/USER"
