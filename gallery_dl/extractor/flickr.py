@@ -496,7 +496,7 @@ class FlickrAPI(oauth.OAuth1API):
         photo["id"] = text.parse_int(photo["id"])
 
         if "owner" not in photo:
-            photo["owner"] = self.extractor.user
+            photo["owner"] = self.extractor.username
         elif not self.meta_info:
             photo["owner"] = {
                 "nsid"      : photo["owner"],

@@ -8,23 +8,31 @@
 
 """Extractors for https://www.deviantart.com/"""
 
-from abc import abstractmethod, ABC
-from collections.abc import Generator
-from collections import defaultdict
-from urllib.parse import parse_qs
-
-from ..Models.Deviantart import Deviation
-from .common import Extractor, Message
-from .. import text, util, exception
-from ..cache import cache, memcache
-import mimetypes
 import binascii
+import mimetypes
+import re
 import time
 
+# TODO - Need to work on archiving Journals
+from abc import ABC, abstractmethod
+from collections import defaultdict
+from collections.abc import Generator
+from urllib.parse import parse_qs
+
+from .. import exception, text, util
+from ..cache import cache, memcache
+from ..Models.Deviantart import DeviantAuthor, Deviation
+from .common import Extractor, Message
+
+OLD_PATTER = (
+    r"(?:https?://)?(?:"
+    r"(?:www\.)?(?:fx)?deviantart\.com/(?!watch/)(?P<user>[\w-]+)|"
+    r"(?!www\.)([\w-]+)\.(?:fx)?deviantart\.com)"
+)
 BASE_PATTERN = (
     r"(?:https?://)?(?:"
-    r"(?:www\.)?(?:fx)?deviantart\.com/(?!watch/)([\w-]+)|"
-    r"(?!www\.)([\w-]+)\.(?:fx)?deviantart\.com)"
+    r"(?:www\.)?(?:fx)?deviantart\.com/(?:(?!watch|notifications|shop)(?P<base_user>[\w-]+))|"
+    r"(?:https?://)?(?:www\.)?deviantart\.com)"
 )
 DEFAULT_AVATAR = "https://a.deviantart.net/avatars/default.gif"
 
@@ -47,7 +55,8 @@ class DeviantartExtractor(Extractor, ABC):
     def __init__(self, match):
         Extractor.__init__(self, match)
         self.group: str | None = None
-        self.user: str = (match[1] or match[2] or "").lower()
+        self.username = (match.group("base_user") or match.group("user") or "").lower()
+        # self.user: str = (match[1] or match[2] or "").lower()
         self.offset: int = 0
 
     def _init(self):
@@ -65,8 +74,9 @@ class DeviantartExtractor(Extractor, ABC):
         self.unwatch: list | None = [] if self.config("auto-unwatch", False) else None
         # endregion ##### Config Vars #####
 
-        self.eclipse_api = DeviantartEclipseAPI(self)
+        # TODO - support the OAUTH APO
         self.oauth_api = DeviantartOAuthAPI(self)
+        self.eclipse_api = DeviantartEclipseAPI(self)
         self.api: DeviantartEclipseAPI = self.eclipse_api
 
         self.group = False
@@ -135,19 +145,27 @@ class DeviantartExtractor(Extractor, ABC):
         return None
 
     def items(self):
-        if self.user:
+        if self.username:
             if group := self.config("group", True):
-                if user := _user_details(self, self.user):
-                    self.user = user["username"]
+                if user := _user_details(self, self.username):
+                    self.username = user["username"]
                     self.group = False
                 elif group == "skip":
-                    self.log.info("Skipping group '%s'", self.user)
+                    self.log.info("Skipping group '%s'", self.username)
                     raise exception.AbortExtraction()
                 else:
                     self.subcategory = "group-" + self.subcategory
                     self.group = True
 
         for deviation in self.deviations():
+            # TODO - Fix the HTML Parsing - Maybe make this part of the model?
+            # if deviation.description_html:
+            #     if deviation.description_html["type"] == "tiptap":
+            #         deviation.description_html = self._tiptap_to_html(
+            #             deviation.description_html["markup"]
+            #         )
+            #     else:
+            #         deviation.description_html = deviation.description_html["markup"]
             if self.offset:
                 self.offset += 1
             else:
@@ -166,44 +184,63 @@ class DeviantartExtractor(Extractor, ABC):
                 )
                 continue
             elif deviation.tier_access == "locked":
-                self.log.debug("Skipping %s (Subscription - locked)", deviation.uuid)
+                self.log.info("Skipping %s (Subscription - locked)", deviation.uuid)
                 continue
             elif deviation.premium_folder and not deviation.premium_folder.access:
-                self.log.debug("Skipping %s (Premium Folder - locked)", deviation.uuid)
+                self.log.info("Skipping %s (Premium Folder - locked)", deviation.uuid)
                 continue
 
-            if (deviation.multiImage and not deviation.additional_media) or (
-                deviation.purchasable and not deviation.premium_content
-            ):
+            enhanced_deviation_rules = [
+                deviation.multiImage and not deviation.additional_media,
+                deviation.purchasable and not deviation.premium_content,
+                deviation.premium_content and deviation.tier_access == "unlocked",
+            ]
+            if any(enhanced_deviation_rules):
                 # Missing Extended Deviation Info
                 response = self.api.deviation(
                     deviation.id, deviation.author.username, "art"
                 )
+                folder = deviation.folder
                 deviation = Deviation.model_validate(response["deviation"])
-
-            _deviation = deviation.model_dump()
-            yield Message.Directory, _deviation
-
-            if deviation.download and deviation.downloadable:
-                yield Message.Url, deviation.download.src, _deviation
-            elif deviation.media:
-                yield Message.Url, deviation.media.src, deviation.model_dump()
-            # TODO - fix the extension
-
-            if deviation.premium_content and deviation.tier_access == "unlocked":
-                #TODO - Fix that this gets the PCP correctly
-                response = self.api.deviation(deviation.id, self.user, "art")
-                deviation = Deviation.model_validate(response["deviation"])
+                deviation.folder = folder
 
             if deviation.premium_content and deviation.premium_content.purchased:
-                _extension = deviation.media.extension
-                deviation.media.extension = deviation.premium_content.extension
-                yield Message.Url, deviation.premium_content.src, deviation.model_dump()
-                deviation.media.extension = _extension
+                _original_media = deviation.media
+                deviation.media = deviation.premium_content
+                yield Message.Directory, deviation.model_dump()
+                yield Message.Url, deviation.media.src, deviation.model_dump()
+                deviation.media = _original_media
 
-            for media in deviation.additional_media:
-                deviation.media = media
-                yield Message.Url, media.src, deviation.model_dump()
+            preview_rules = [
+                (
+                    deviation.premium_content
+                    and deviation.premium_content.purchased
+                    and self.config("previews")
+                ),
+                (
+                    deviation.premium_content
+                    and deviation.premium_content.purchased
+                    and deviation.premium_content.assets
+                    and len(deviation.premium_content.assets) < deviation.count
+                ),
+                deviation.premium_content and not deviation.premium_content.purchased,
+                not deviation.premium_content,
+            ]
+            if any(preview_rules):
+                yield Message.Directory, deviation.model_dump()
+
+                if deviation.download and deviation.downloadable:
+                    yield Message.Url, deviation.download.src, deviation.model_dump()
+                elif deviation.media:
+                    yield Message.Url, deviation.media.src, deviation.model_dump()
+                # TODO - fix the extension
+
+                for media in deviation.additional_media:
+                    deviation.media = media
+                    try:
+                        yield Message.Url, media.src, deviation.model_dump()
+                    except Exception as exc:
+                        print("Ran Into Problem: ", exc)
 
     @abstractmethod
     def deviations(self) -> Generator[Deviation]:
@@ -615,7 +652,7 @@ x2="45.4107524%" y2="71.4898596%" id="app-root-3">\
         raise exception.NotFoundError("folder")
 
     def _folder_urls(self, folders, category, extractor):
-        base = f"{self.root}/{self.user}/{category}/"
+        base = f"{self.root}/{self.username}/{category}/"
         for folder in folders:
             folder["_extractor"] = extractor
             url = f"{base}{folder['folderid']}/{folder['name']}"
@@ -761,28 +798,27 @@ class DeviantartDeviationExtractor(DeviantartExtractor):
     """Extractor for single deviations"""
 
     subcategory = "deviation"
-    pattern = (
-        BASE_PATTERN + r"/(art|journal)/(?:[^/?#]+-)?(\d+)"
+    pattern = BASE_PATTERN + (
+        r"/(?P<type>art|journal)/"
+        r"(?:[^/?#]+-)?(?P<dev_id>\d+)"  # Deviation Id With Name
         r"|(?:https?://)?(?:www\.)?(?:fx)?deviantart\.com/"
         r"(?:view/|deviation/|view(?:-full)?\.php/*\?(?:[^#]+&)?id=)"
-        r"(\d+)"  # bare deviation ID without a slug
+        r"(?P=dev_id)"  # bare deviation ID without a slug
         r"|(?:https?://)?fav\.me/d([0-9a-z]+)"
     )  # base36
     example = "https://www.deviantart.com/USER/art/TITLE-12345"
 
     skip = Extractor.skip
 
-    def __init__(self, match):
+    def __init__(self, match: re.Match):
         DeviantartExtractor.__init__(self, match)
-        self.type = match.group(3)
-        self.deviation_id = (
-            match.group(4) or match.group(5) or id_from_base36(match.group(6))
-        )
+        self.type: str = match.group("type")
+        self.deviation_id: int = match.group("dev_id") or id_from_base36(match.group(6))
 
     def deviations(self) -> Generator[Deviation]:
         if isinstance(self.api, DeviantartEclipseAPI):
             response = self.eclipse_api.deviation(
-                self.deviation_id, self.user, self.type
+                self.deviation_id, self.username, self.type
             )
             deviation = Deviation.model_validate(response["deviation"])
 
@@ -794,10 +830,9 @@ class DeviantartFavouritesExtractor(DeviantartExtractor):
 
     # TODO - Implement
 
-    subcategory = "watch"
-    pattern = (
-        BASE_PATTERN
-        + "(?:/favourites)/?(?P<folder_id>[0-9]+)?/?(?P<folder_name>[^/?#]+)?"
+    subcategory = "favorites"
+    pattern = BASE_PATTERN + (
+        "(?:/favourites)/?(?P<folder_id>[0-9]+)?/?(?P<folder_name>[^/?#]+)?"
     )
     example = "https://www.deviantart.com/USER/subscriptions"
 
@@ -810,19 +845,76 @@ class DeviantartFavouritesExtractor(DeviantartExtractor):
         pass
 
 
+class DeviantartFolderExtractor(DeviantartExtractor):
+    """Extractor for deviations inside an artist's gallery folder"""
+
+    subcategory = "folder"
+    directory_fmt = ("{category}", "{username}", "{folder[title]}")
+    pattern = BASE_PATTERN + r"/gallery/(?P<folder_id>[^/?#]+)/(?P<folder_name>[^/?#]+)"
+    example = "https://www.deviantart.com/USER/gallery/12345/TITLE"
+
+    def __init__(self, match):
+        DeviantartExtractor.__init__(self, match)
+        self.folder = None
+        self.folder_id = int(match.group("folder_id"))
+        self.folder_name = match.group("folder_name")
+
+    def deviations(self) -> Generator[Deviation]:
+        # TODO - Empty Folder ID gets all folders without nesting - then we can iterate over them
+        folders = self.eclipse_api.folders(self.username)
+        self.folder = next(
+            (item for item in folders if item["folderId"] == self.folder_id), None
+        )
+
+        if self.folder["parentId"] and not self.folder.get("parentName"):
+            parent_folder = next(
+                item for item in folders if item["folderId"] == self.folder["parentId"]
+            )
+            self.folder["parentName"] = parent_folder.get("name")
+            self.folder["parentUuid"] = parent_folder.get("gallectionUuid")
+        # Leaving this here for backwards compatibility
+
+        folder_contents = self.eclipse_api.folder_contents(
+            self.folder_id, self.username
+        )
+        for deviation in folder_contents:
+            deviation["folder"] = self.folder
+            yield Deviation.model_validate(deviation)
+
+        subfolders = [
+            folder for folder in folders if folder["parentId"] == self.folder_id
+        ]
+        if len(subfolders) > 0 and self.config("subfolders", True):
+            if not self.flat:
+                self.directory_fmt = (
+                    "{category}",
+                    "{username}",
+                    "{folder[parent_folder]}",
+                    "{subfolder[title]}",
+                )
+
+            for subfolder in subfolders:
+                subfolder["parent_name"] = self.folder["name"]
+                for deviation in self.api.folder_contents(
+                    subfolder["folderId"], self.username
+                ):
+                    deviation["folder"] = subfolder
+                    yield Deviation.model_validate(deviation)
+
+
 class DeviantartGalleryExtractor(DeviantartExtractor):
     """Extractor for all deviations from an artist's gallery"""
 
     subcategory = "gallery"
-    pattern = (
-        BASE_PATTERN + r"/gallery"
-        r"(?:/all|/recommended-for-you|/?\?catpath=)?/?$"
+    pattern = BASE_PATTERN + (
+        r"/gallery(?!\?q)"
+        r"(?:/all)?"
     )
     example = "https://www.deviantart.com/USER/gallery/"
 
     def deviations(self) -> Generator[Deviation]:
         if isinstance(self.api, DeviantartEclipseAPI):
-            gallery = self.eclipse_api.gallery(self.user)
+            gallery = self.eclipse_api.gallery(self.username)
             for deviation in gallery:
                 yield Deviation.model_validate(deviation)
 
@@ -840,125 +932,39 @@ class DeviantartGallerySearchExtractor(DeviantartExtractor):
 
     def deviations(self) -> Generator[Deviation]:
         parsed_query = parse_qs(self.query).get("q")[0]
-        for deviation in self.eclipse_api.gallery_search(self.user, parsed_query):
+        for deviation in self.eclipse_api.gallery_search(self.username, parsed_query):
             yield Deviation.model_validate(deviation)
 
 
-class DeviantartFolderExtractor(DeviantartExtractor):
-    """Extractor for deviations inside an artist's gallery folder"""
+class DeviantartSearchExtractor(DeviantartExtractor):
+    """Extractor for deviantart gallery searches"""
 
-    subcategory = "folder"
-    directory_fmt = ("{category}", "{username}", "{folder[title]}")
-    pattern = BASE_PATTERN + r"/gallery/([^/?#]+)/([^/?#]+)"
-    example = "https://www.deviantart.com/USER/gallery/12345/TITLE"
+    subcategory = "search"
+    pattern = BASE_PATTERN + r"/search/?\?(q=[^#]+)"
+
+    example = "https://www.deviantart.com/search?q=QUERY"
 
     def __init__(self, match):
         DeviantartExtractor.__init__(self, match)
-        self.folder = None
-        self.folder_id = int(match.group(3))
-        self.folder_name = match.group(4)
+        self.query = match.group(1)
 
     def deviations(self) -> Generator[Deviation]:
-        # TODO - Empty Folder ID gets all folders without nesting - then we can iterate over them
-        folders = self.eclipse_api.folders(self.user)
-        folder = next(
-            (item for item in folders if item["folderId"] == self.folder_id), None
-        )
-        # Leaving this here for backwards compatibility
-
-        folder_contents = self.eclipse_api.folder_contents(self.folder_id, self.user)
-        for deviation in folder_contents:
-            deviation["folder"] = folder
+        parsed_query = parse_qs(self.query).get("q")[0]
+        for deviation in self.eclipse_api.search_all(parsed_query):
             yield Deviation.model_validate(deviation)
-
-        subfolders = [
-            folder for folder in folders if folder["parentId"] == self.folder_id
-        ]
-        if len(subfolders) > 0 and self.config("subfolders", True):
-            if not self.flat:
-                self.directory_fmt = (
-                    "{category}",
-                    "{username}",
-                    "{folder[parent_folder]}",
-                    "{subfolder[title]}",
-                )
-
-            for subfolder in subfolders:
-                subfolder["parent_name"] = folder["name"]
-                for deviation in self.api.folder_contents(
-                    subfolder["folderId"], self.user
-                ):
-                    deviation["folder"] = subfolder
-                    yield Deviation.model_validate(deviation)
-
-
-class DeviantartWatchExtractor(DeviantartExtractor):
-    """Extractor for Deviations from watched users"""
-
-    subcategory = "watch"
-    pattern = (
-        r"(?:https?://)?(?:www\.)?deviantart\.com"
-        r"/(?:watch|notifications/watch)"
-        r"(?:/deviations/([\w\W]+))"
-    )
-    example = "https://www.deviantart.com/watch/deviations/USER"
-
-    def deviations(self) -> Generator[Deviation]:
-        if self.user:
-            user_info = self.api.user_info(self.user)
-            user_id = user_info["owner"]["userId"]
-            response = self.api.deviants_you_watch(
-                user_id, archive=self.archive_deviations
-            )
-            for deviation in response:
-                if deviation.get("deviation") is not None:
-                    yield Deviation.model_validate(deviation["deviation"])
-                else:
-                    self.log.warning(
-                        "Deviation has no 'deviation' key - Likely the deviation/notification is no longer available"
-                    )
-                if self.archive_deviations:
-                    self.eclipse_api.archive_watched_deviation(deviation["messageId"])
-
-
-class DeviantartWatchSubExtractor(DeviantartExtractor):
-    """Extractor for Deviations from watched users"""
-
-    subcategory = "watch"
-    pattern = (
-        r"(?:https?://)?(?:www\.)?deviantart\.com"
-        r"/(?:watch)"
-        r"(?:/mysubscriptions/([\w\W]+))"
-    )
-    example = "https://www.deviantart.com/notifications/watch/mysubscriptions/USER"
-
-    def deviations(self) -> Generator[Deviation]:
-        if self.user:
-            user_info = self.api.user_info(self.user)
-            user_id = user_info["owner"]["userId"]
-            response = self.api.deviants_you_watch(
-                user_id, "tiercontent", archive=self.archive_deviations
-            )
-            for deviation in response:
-                yield Deviation.model_validate(deviation["deviation"])
-                if self.archive_deviations:
-                    self.eclipse_api.archive_watched_deviation(deviation["messageId"])
 
 
 class DeviantartSubscriptionExtractor(DeviantartExtractor):
     """Extractor for Deviations from watched users"""
 
-    subcategory = "watch"
-    pattern = (
-        r"(?:https?://)?(?:www\.)?deviantart\.com"
-        r"/([\w\W]+)/subscriptions"
-    )
+    subcategory = "subscription"
+    pattern = BASE_PATTERN + r"/([\w\W]+)/subscriptions"
     example = "https://www.deviantart.com/USER/subscriptions"
 
     def deviations(self) -> Generator[Deviation]:
-        if self.user:
+        if self.username:
             # TODO - Figure out PyDantic for this
-            _subscriptions = self.api.subscriptions(self.user)
+            _subscriptions = self.api.subscriptions(self.username)
             _tier_content = _subscriptions["gruser"]["page"]["modules"][2][
                 "moduleData"
             ]["tierContent"]
@@ -971,6 +977,182 @@ class DeviantartSubscriptionExtractor(DeviantartExtractor):
                 response = self.api.content(_tier_id, _tier_content["nextOffset"] or 0)
                 for _deviation in response:
                     yield Deviation.model_validate(_deviation)
+
+
+class DeviantartUserShopExtractor(DeviantartExtractor):
+    """Extractor for purchased deviations from a specific user"""
+
+    subcategory = "user-shop"
+    pattern = BASE_PATTERN + r"(?<!com)(?:/shop)(?:/premium_content)?"
+    example = "https://www.deviantart.com/{USER}/shop/premium_content"
+
+    def deviations(self) -> Generator[Deviation]:
+        if self.username:
+            shop_info = self.api.shop(self.username)
+            if shop_info.get("gruser"):
+                for module in shop_info["gruser"]["page"]["modules"]:
+                    module_data = module["moduleData"]
+                    if list(module_data.values())[1].get("total"):
+                        for deviation in self.api.premium_content(
+                            shop_info["gruser"]["gruserId"],
+                            shop_info["gruser"]["gruserTypeid"],
+                            module["id"],
+                            shop_info["owner"]["username"],
+                        ):
+                            yield Deviation.model_validate(deviation)
+            elif shop_info.get("error") and shop_info.get("errorCode") == 302:
+                user_info = self.api.user_info(self.username)
+                for deviation in self.api.premium_content(
+                    user_info["gruser"]["gruserId"],
+                    user_info["gruser"]["gruserTypeid"],
+                    -999,
+                    user_info["owner"]["username"],
+                ):
+                    yield Deviation.model_validate(deviation)
+
+
+class DeviantartWatchExtractor(DeviantartExtractor):
+    """Extractor for pulling in every single thing you are watching"""
+
+    subcategory = "watch"
+    pattern = BASE_PATTERN + (
+        r"/(?:watch|notifications/watch)"
+        r"/?(?P<type>deviations|groupdeviations|posts|journals|polls|status|shop|subscriptions|mysubscriptions|adoptables|commissions|premiumdownloads)?"
+        r"(?<!/[\w-])/?(?P<user>[\w-]+)?"
+    )
+    examples = (
+        "https://www.deviantart.com/watch/shop",
+        "https://www.deviantart.com/notifications/watch/posts",
+    )
+
+    message_types_dict = {
+        "groupdeviations": "",
+        "posts": ("journals", "polls", "status"),
+        "shop": (
+            "adoptables",
+            "commissions",
+            "pcpdeviations",
+        ),  # TODO - figure out tiers/subscriptions
+        "subscriptions": "tiercontent",
+        "mysubscriptions": "tiercontent",
+        "premiumdownloads": "pcpdeviations",
+    }
+
+    def __init__(self, match):
+        DeviantartExtractor.__init__(self, match)
+        self.type = match.group("type")
+        self.author = None
+
+    def deviations(self) -> Generator[Deviation]:
+        if self.username:
+            response = self.api.user_info(self.username)
+            self.author = DeviantAuthor.model_validate(response["owner"])
+
+        message_types = self.message_types_dict.get(self.type, self.type)
+        message_types = (
+            [message_types] if isinstance(message_types, str) else message_types
+        )
+
+        for message_type in message_types:
+            deviations = self.api.watch(
+                message_type,
+                userid=self.author.id if self.author else None,
+                archive=self.archive_deviations,
+            )
+
+            for deviation in deviations:
+                if deviation.get("deviation") is not None:
+                    yield Deviation.model_validate(deviation.get("deviation"))
+                else:
+                    self.log.warning(
+                        "Deviation has no 'deviation' key - Likely the deviation/notification is no longer available"
+                    )
+                if self.archive_deviations:
+                    self.eclipse_api.archive_watched_deviation(deviation["messageId"])
+
+
+# class DeviantartWatchStackExtractor(DeviantartExtractor):
+#     """Extractor for Deviations from watched users"""
+#
+#     subcategory = "stack"
+#     pattern = BASE_PATTERN + (
+#         r"/(?:watch|notifications/watch)"
+#         r"/(?P<type>journals)"
+#         r"/(?P<user>[\w-]+)"
+#     )
+#     examples = (
+#         "https://www.deviantart.com/watch/deviations/USER",
+#         "https://www.deviantart.com/notifications/watch/deviations/USER",
+#     )
+#
+#     def __init__(self, match):
+#         DeviantartExtractor.__init__(self, match)
+#         self.type = match.group("type")
+#
+#     def deviations(self) -> Generator[Deviation]:
+#         if self.username:
+#             user_info = self.api.user_info(self.username)
+#             user_id = user_info["owner"]["userId"]
+#             response = self.api.deviants_you_watch(
+#                 user_id, archive=self.archive_deviations
+#             )
+#             for deviation in response:
+#                 if deviation.get("deviation") is not None:
+#                     yield Deviation.model_validate(deviation["deviation"])
+#                 else:
+#                     self.log.warning(
+#                         "Deviation has no 'deviation' key - Likely the deviation/notification is no longer available"
+#                     )
+#                 if self.archive_deviations:
+#                     self.eclipse_api.archive_watched_deviation(deviation["messageId"])
+#
+#
+# class DeviantartWatchSubExtractor(DeviantartExtractor):
+#     """Extractor for Deviations from watched users"""
+#
+#     subcategory = "watch"
+#     pattern = (
+#         r"(?:https?://)?(?:www\.)?deviantart\.com"
+#         r"/(?:watch)"
+#         r"(?:/mysubscriptions/([\w\W]+))"
+#     )
+#     example = "https://www.deviantart.com/notifications/watch/mysubscriptions/USER"
+#
+#     def deviations(self) -> Generator[Deviation]:
+#         if self.username:
+#             user_info = self.api.user_info(self.username)
+#             user_id = user_info["owner"]["userId"]
+#             response = self.api.deviants_you_watch(
+#                 user_id, "tiercontent", archive=self.archive_deviations
+#             )
+#             for deviation in response:
+#                 yield Deviation.model_validate(deviation["deviation"])
+#                 if self.archive_deviations:
+#                     self.eclipse_api.archive_watched_deviation(deviation["messageId"])
+#
+#
+# class DeviantartWatchPremiumExtractor(DeviantartExtractor):
+#     """Extractor for Deviations from watched users"""
+#
+#     subcategory = "premium"
+#     pattern = (
+#         r"(?:https?://)?(?:www\.)?deviantart\.com"
+#         r"/(?:watch)"
+#         r"(?:/premiumdownloads/([\w\W]+))"
+#     )
+#     example = "https://www.deviantart.com/watch/premiumdownloads/USER"
+#
+#     def deviations(self) -> Generator[Deviation]:
+#         if self.username:
+#             user_info = self.api.user_info(self.username)
+#             user_id = user_info["owner"]["userId"]
+#             response = self.api.deviants_you_watch(
+#                 user_id, "pcpdeviations", archive=self.archive_deviations
+#             )
+#             for deviation in response:
+#                 yield Deviation.model_validate(deviation["deviation"])
+#                 if self.archive_deviations:
+#                     self.eclipse_api.archive_watched_deviation(deviation["messageId"])
 
 
 # endregion
@@ -1209,7 +1391,7 @@ class DeviantartOAuthAPI:
         }
         return self._pagination(endpoint, params, extend, public)
 
-    def gallery_all(self, username, offset=0):
+    def gallery_all(self, username, offset=0, whole_page=False):
         """Yield all Deviation-objects of a specific user"""
         endpoint = "/gallery/all"
         params = {
@@ -1218,7 +1400,7 @@ class DeviantartOAuthAPI:
             "limit": 24,
             "mature_content": self.mature,
         }
-        return self._pagination(endpoint, params)
+        return self._pagination(endpoint, params, whole_page=whole_page)
 
     @memcache(keyarg=1)
     def gallery_folders(self, username, offset=0):
@@ -1393,7 +1575,14 @@ class DeviantartOAuthAPI:
         return False
 
     def _pagination(
-        self, endpoint, params, extend=True, public=None, unpack=False, key="results"
+        self,
+        endpoint,
+        params,
+        extend=True,
+        public=None,
+        unpack=False,
+        key="results",
+        whole_page=False,
     ):
         warn = True
         if public is None:
@@ -1441,8 +1630,10 @@ class DeviantartOAuthAPI:
                         )
                         if patch:
                             dev.update(patch)
-
-            yield from results
+            if whole_page:
+                yield results
+            else:
+                yield from results
 
             if not data["has_more"] and (
                 self.strategy != "manual" or not results or not extend
@@ -1540,6 +1731,9 @@ class DeviantartEclipseAPI:
         self.request = self.extractor.limited_request
         self.csrf_token = None
         self.archive = archive
+        self.oauth_api = extractor.oauth_api
+        self.metadata = extractor.config("metadata", False)
+        self.offset = extractor.config("offset", None)
 
     # region ##### API Endpoints #####
     def archive_watched_deviation(self, message_ids):
@@ -1620,9 +1814,19 @@ class DeviantartEclipseAPI:
             "type": "gallery",
             "order": "default",
             "limit": 60,
-            "offset": offset,
+            "offset": offset if self.offset is None else self.offset,
         }
-        return self._pagination(endpoint, params)
+        # TODO - Handle Offset better
+        if self.metadata:
+            resp = self._pagination(endpoint, params)
+            oauth_resp = self.oauth_api.gallery_all(
+                user,
+                offset=offset if self.offset is None else self.offset,
+                whole_page=True,
+            )
+            return self.stitch_response(resp, oauth_resp)
+        else:
+            return self._pagination(endpoint, params)
 
     def gallery_scraps(self, user, offset=0):
         endpoint = "/_puppy/dashared/gallection/contents"
@@ -1647,6 +1851,11 @@ class DeviantartEclipseAPI:
         }
         return self._pagination(endpoint, params)
 
+    def orders(self, user):
+        endpoint = " /_puppy/dacheckout/orders"
+        params = {"username": user, "type": "gallery"}
+        return self._call(endpoint, params)["orders"]
+
     def posts(self, user, offset=0):
         endpoint = "/_puppy/dauserprofile/init/posts"
         params = {
@@ -1659,6 +1868,24 @@ class DeviantartEclipseAPI:
         }
         return self._pagination(endpoint, params)
 
+    def premium_content(self, gruserid, gruser_typeid, moduleid, username, offset=0):
+        endpoint = "/_puppy/gruser/module/premium_content"
+        params = {
+            "gruserid": gruserid,
+            "gruser_typeid": gruser_typeid,  # TODO - Figure out if this changes
+            "username": username,
+            "moduleid": moduleid,
+            "offset": offset,
+            "limit": 25,
+            "da_minor_version": "20230710",
+        }
+        return self._pagination(endpoint, params)
+
+    def shop(self, username):
+        endpoint = "/_puppy/dauserprofile/init/shop"
+        params = {"username": username, "da_minor_version": "20230710"}
+        return self._call(endpoint, params)
+
     def subscriptions(self, username):
         endpoint = "/_puppy/dauserprofile/init/subscriptions"
         params = {
@@ -1666,6 +1893,15 @@ class DeviantartEclipseAPI:
             "da_minor_version": "20230710",
         }
         return self._call(endpoint, params=params)
+
+    def search_all(self, query):
+        endpoint = "/_puppy/dabrowse/search/all"
+        params = {
+            "q": query,
+            "cursor": None,
+            "da_minor_version": "20230710",
+        }
+        return self._pagination(endpoint, params, key="deviations")
 
     def search_deviations(self, params):
         endpoint = "/_puppy/dabrowse/search/deviations"
@@ -1690,9 +1926,48 @@ class DeviantartEclipseAPI:
         }
         return self._pagination(endpoint, params)
 
+    def watch(self, watch_type: str, userid: int | None = None, archive=False):
+        endpoint = "/_puppy/damessagecentre/watch"
+        params = {
+            "da_minor_version": "20230710",
+            "limit": 50,
+            "messagetype": watch_type,
+            "stacked": False,  # This way we don't have to call to the stack endpoint,
+            "userid": userid,
+        }
+        return self._pagination(endpoint, params, archive=archive)
+
     # endregion ##### API Endpoints #####
 
     # region ##### Helper Methods #####
+    def stitch_response(self, eclipse_response, oauth_response):
+        metadata = {}
+        page = next(oauth_response)
+        metadata.update({d["url"]: d for d in page})
+
+        for deviation in eclipse_response:
+            if len(metadata.keys()) == 0:
+                page = next(oauth_response)
+                metadata.update({d["url"]: d for d in page})
+
+            if meta := metadata.get(deviation["url"], {}):
+                deviation.update(meta)
+                del metadata[deviation["url"]]
+            else:
+                self.log.warning("Unable to find metadata for '%s'", deviation["url"])
+                page = next(oauth_response)
+                metadata.update({d["url"]: d for d in page})
+
+                if meta := metadata.get(deviation["url"], {}):
+                    deviation.update(meta)
+                    del metadata[deviation["url"]]
+                else:
+                    self.log.warning(
+                        "Unable to find metadata for '%s'", deviation["url"]
+                    )
+
+            yield deviation
+
     def _post(self, endpoint: str, data: dict):
         url = "https://www.deviantart.com" + endpoint
         data["csrf_token"] = self.csrf_token or self._fetch_csrf_token()
@@ -1735,6 +2010,7 @@ class DeviantartEclipseAPI:
                     "Provide login credentials or session cookies "
                     "to be able to access them."
                 )
+
             yield from results
 
             if not data.get("hasMore"):

@@ -214,8 +214,8 @@ class Job:
             else:
                 _filtered = True
                 # TODO - Fix this so there isn't so much logging
-                logging.debug("Requested URL: %s", kwdict['_extractor'].url)
-                logging.degub("Filtered Titlename: %s", kwdict.get("_title", "No Title"))
+                logging.info("Requested URL: %s", kwdict["_extractor"].url)
+                logging.info("Filtered Titlename: %s", kwdict.get("_title", "No Title"))
                 logging.info("Filtered: %s", kwdict.get("filename", "No Filename"))
 
             if FLAGS.FILE is not None:
@@ -236,6 +236,7 @@ class Job:
                 _filtered = True
             if FLAGS.CHILD is not None:
                 FLAGS.process("CHILD")
+
 
         if _filtered and hasattr(self, "hooks"):
             if "filter" in self.hooks:
@@ -355,7 +356,6 @@ class Job:
                     callback(self.pathfmt)
 
             self.pathfmt = None
-
 
     def _prepare_predicates(self, target, skip=True):
         predicates = []
