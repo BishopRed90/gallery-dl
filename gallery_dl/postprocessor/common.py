@@ -11,7 +11,7 @@
 from .. import archive
 
 
-class PostProcessor():
+class PostProcessor:
     """Base class for postprocessors"""
 
     def __init__(self, job):
@@ -50,10 +50,13 @@ class PostProcessor():
             except Exception as exc:
                 self.log.warning(
                     "Failed to open %s archive at '%s' (%s: %s)",
-                    self.name, archive_path, exc.__class__.__name__, exc)
+                    self.name,
+                    archive_path,
+                    exc.__class__.__name__,
+                    exc,
+                )
             else:
-                self.log.debug(
-                    "Using %s archive '%s'", self.name, archive_path)
+                self.log.debug("Using %s archive '%s'", self.name, archive_path)
                 return True
 
         self.archive = None

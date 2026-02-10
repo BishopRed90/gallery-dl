@@ -16,15 +16,14 @@ from . import util, formatter, exception
 WINDOWS = util.WINDOWS
 EXTENSION_MAP = {
     "jpeg": "jpg",
-    "jpe" : "jpg",
+    "jpe": "jpg",
     "jfif": "jpg",
-    "jif" : "jpg",
-    "jfi" : "jpg",
+    "jif": "jpg",
+    "jfi": "jpg",
 }
 
 
-class PathFormat():
-
+class PathFormat:
     def __init__(self, extractor):
         config = extractor.config
         kwdefault = config("keywords-default")
@@ -37,15 +36,19 @@ class PathFormat():
                 filename_fmt = extractor.filename_fmt
             elif isinstance(filename_fmt, dict):
                 self.filename_conditions = [
-                    (util.compile_filter(expr),
-                     formatter.parse(fmt, kwdefault).format_map)
-                    for expr, fmt in filename_fmt.items() if expr
+                    (
+                        util.compile_filter(expr),
+                        formatter.parse(fmt, kwdefault).format_map,
+                    )
+                    for expr, fmt in filename_fmt.items()
+                    if expr
                 ]
                 self.build_filename = self.build_filename_conditional
                 filename_fmt = filename_fmt.get("", extractor.filename_fmt)
 
             self.filename_formatter = formatter.parse(
-                filename_fmt, kwdefault).format_map
+                filename_fmt, kwdefault
+            ).format_map
         except Exception as exc:
             raise exception.FilenameFormatError(exc)
 
@@ -56,11 +59,12 @@ class PathFormat():
                 directory_fmt = extractor.directory_fmt
             elif isinstance(directory_fmt, dict):
                 self.directory_conditions = [
-                    (util.compile_filter(expr), [
-                        formatter.parse(fmt, kwdefault).format_map
-                        for fmt in fmts
-                    ])
-                    for expr, fmts in directory_fmt.items() if expr
+                    (
+                        util.compile_filter(expr),
+                        [formatter.parse(fmt, kwdefault).format_map for fmt in fmts],
+                    )
+                    for expr, fmts in directory_fmt.items()
+                    if expr
                 ]
                 self.build_directory = self.build_directory_conditional
                 directory_fmt = directory_fmt.get("", extractor.directory_fmt)
@@ -92,11 +96,11 @@ class PathFormat():
         replace = config("path-replace", "_")
         conv = config("path-convert")
         if restrict == "auto":
-            restrict = "\\\\|/<>:\"?*" if WINDOWS else "/"
+            restrict = '\\\\|/<>:"?*' if WINDOWS else "/"
         elif restrict == "unix":
             restrict = "/"
         elif restrict == "windows":
-            restrict = "\\\\|/<>:\"?*"
+            restrict = '\\\\|/<>:"?*'
         elif restrict == "ascii":
             restrict = "^0-9A-Za-z_."
         elif restrict == "ascii+":
@@ -131,8 +135,12 @@ class PathFormat():
                         if not expr:
                             basedir = bdir
                             continue
-                        conds.append((util.compile_filter(expr),
-                                      self._prepare_basedirectory(bdir)))
+                        conds.append(
+                            (
+                                util.compile_filter(expr),
+                                self._prepare_basedirectory(bdir),
+                            )
+                        )
                 basedir = self._prepare_basedirectory(basedir)
         self.basedirectory = basedir
 
@@ -195,8 +203,9 @@ class PathFormat():
                 basedir = self.basedirectory
 
         if segments := self.build_directory(kwdict):
-            self.directory = directory = \
+            self.directory = directory = (
                 f"{basedir}{self.clean_path(os.sep.join(segments))}{os.sep}"
+            )
         else:
             self.directory = directory = basedir
 
@@ -234,8 +243,7 @@ class PathFormat():
         """Fix filenames without a given filename extension"""
         try:
             if not self.extension:
-                self.kwdict["extension"] = \
-                    self.prefix + self.extension_map("", "")
+                self.kwdict["extension"] = self.prefix + self.extension_map("", "")
                 self.build_path()
                 if self.path[-1] == ".":
                     self.path = self.path[:-1]
@@ -252,8 +260,7 @@ class PathFormat():
     def build_filename(self, kwdict):
         """Apply 'kwdict' to filename format string"""
         try:
-            return self.clean_path(self.clean_segment(
-                self.filename_formatter(kwdict)))
+            return self.clean_path(self.clean_segment(self.filename_formatter(kwdict)))
         except Exception as exc:
             raise exception.FilenameFormatError(exc)
 
@@ -264,9 +271,14 @@ class PathFormat():
                     break
             else:
                 fmt = self.filename_formatter
-            return self.clean_path(self.clean_segment(fmt(kwdict)))
+
+            _fmt = fmt(kwdict)
+            _clean_seg = self.clean_segment(_fmt)
+            _cleaned = self.clean_path(_clean_seg)
+            return _cleaned
         except Exception as exc:
             raise exception.FilenameFormatError(exc)
+
 
     def build_directory(self, kwdict):
         """Apply 'kwdict' to directory format strings"""
@@ -318,8 +330,7 @@ class PathFormat():
         if self.extension:
             self.temppath += ".part"
         else:
-            self.kwdict["extension"] = self.prefix + self.extension_map(
-                "part", "part")
+            self.kwdict["extension"] = self.prefix + self.extension_map("part", "part")
             self.build_path()
         if part_directory:
             self.temppath = os.path.join(
@@ -336,13 +347,13 @@ class PathFormat():
         return 0
 
     def set_mtime(self, path=None):
-        if (mtime := (self.kwdict.get("_mtime_meta") or
-                      self.kwdict.get("_mtime_http"))):
+        if mtime := (self.kwdict.get("_mtime_meta") or self.kwdict.get("_mtime_http")):
             util.set_mtime(self.realpath if path is None else path, mtime)
 
     def finalize(self):
         """Move tempfile to its target location"""
         self.set_directory(self.kwdict)
+        self.build_filename(self.kwdict)
         self.build_path()
         if self.delete:
             self.delete = False
@@ -388,6 +399,7 @@ def _build_convertfunc(func, conv):
         for conv in convs:
             x = conv(x)
         return x
+
     convs = [formatter._CONVERSIONS[c] for c in conv]
     return convert_many
 
@@ -402,8 +414,10 @@ def _build_cleanfunc(chars, repl, conv=None):
 
         def func(x):
             return x.translate(table)
+
         table = str.maketrans(chars)
     elif len(chars) == 1:
+
         def func(x):
             return x.replace(chars, repl)
     else:
@@ -415,7 +429,7 @@ def _process_repl_dict(chars):
     # can't modify 'chars' while *directly* iterating over its keys
     for char in [c for c in chars if len(c) > 1]:
         if len(char) == 3 and char[1] == "-":
-            citer = range(ord(char[0]), ord(char[2])+1)
+            citer = range(ord(char[0]), ord(char[2]) + 1)
         else:
             citer = char
 

@@ -866,6 +866,9 @@ def compile_expression_tryexcept(expr, name="<expr>", globals=None):
             return eval(code_object, globals, locals)
         except exception.GalleryDLException:
             raise
+        except AttributeError as attr_err:
+            locals["_extractor"].log.error(f"Filename Expression: {expr}")
+            locals["_extractor"].log.error(f"AttributeError: {attr_err}")
         except Exception:
             return NONE
 

@@ -4,7 +4,7 @@
 # it under the terms of the GNU General Public License version 2 as
 # published by the Free Software Foundation.
 
-from gallery_dl.extractor import deviantart
+from gallery_dl.extractor import deviantart_old
 import datetime
 from gallery_dl import exception
 
