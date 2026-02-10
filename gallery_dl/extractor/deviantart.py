@@ -24,7 +24,7 @@ from ..cache import cache, memcache
 from ..Models.Deviantart import DeviantAuthor, Deviation
 from .common import Extractor, Message
 
-OLD_PATTER = (
+OLD_PATTERN = (
     r"(?:https?://)?(?:"
     r"(?:www\.)?(?:fx)?deviantart\.com/(?!watch/)(?P<user>[\w-]+)|"
     r"(?!www\.)([\w-]+)\.(?:fx)?deviantart\.com)"
@@ -194,6 +194,7 @@ class DeviantartExtractor(Extractor, ABC):
                 deviation.multiImage and not deviation.additional_media,
                 deviation.purchasable and not deviation.premium_content,
                 deviation.premium_content and deviation.tier_access == "unlocked",
+                deviation.downloadable and not deviation.download,
             ]
             if any(enhanced_deviation_rules):
                 # Missing Extended Deviation Info
@@ -235,12 +236,12 @@ class DeviantartExtractor(Extractor, ABC):
                     yield Message.Url, deviation.media.src, deviation.model_dump()
                 # TODO - fix the extension
 
-                for media in deviation.additional_media:
-                    deviation.media = media
-                    try:
-                        yield Message.Url, media.src, deviation.model_dump()
-                    except Exception as exc:
-                        print("Ran Into Problem: ", exc)
+            for media in deviation.additional_media:
+                deviation.media = media
+                try:
+                    yield Message.Url, media.src, deviation.model_dump()
+                except Exception as exc:
+                    print("Ran Into Problem: ", exc)
 
     @abstractmethod
     def deviations(self) -> Generator[Deviation]:
@@ -923,12 +924,12 @@ class DeviantartGallerySearchExtractor(DeviantartExtractor):
     """Extractor for deviantart gallery searches"""
 
     subcategory = "gallery-search"
-    pattern = BASE_PATTERN + r"/gallery/?\?(q=[^#]+)"
+    pattern = BASE_PATTERN + r"/gallery/?\?(?P<query>q=[^#]+)"
     example = "https://www.deviantart.com/USER/gallery?q=QUERY"
 
     def __init__(self, match):
         DeviantartExtractor.__init__(self, match)
-        self.query = match.group(3)
+        self.query = match.group("query")
 
     def deviations(self) -> Generator[Deviation]:
         parsed_query = parse_qs(self.query).get("q")[0]
@@ -958,7 +959,7 @@ class DeviantartSubscriptionExtractor(DeviantartExtractor):
     """Extractor for Deviations from watched users"""
 
     subcategory = "subscription"
-    pattern = BASE_PATTERN + r"/([\w\W]+)/subscriptions"
+    pattern = BASE_PATTERN + r"/subscriptions"
     example = "https://www.deviantart.com/USER/subscriptions"
 
     def deviations(self) -> Generator[Deviation]:
@@ -1054,11 +1055,18 @@ class DeviantartWatchExtractor(DeviantartExtractor):
         )
 
         for message_type in message_types:
-            deviations = self.api.watch(
-                message_type,
-                userid=self.author.id if self.author else None,
-                archive=self.archive_deviations,
-            )
+            if self.author:
+                deviations = self.api.deviants_you_watch(
+                    user_id=self.author.id,
+                    stack_type=message_type,
+                    archive=self.archive_deviations,
+                )
+            else:
+                deviations = self.api.watch(
+                    message_type,
+                    userid=self.author.id if self.author else None,
+                    archive=self.archive_deviations,
+                )
 
             for deviation in deviations:
                 if deviation.get("deviation") is not None:
@@ -1770,13 +1778,13 @@ class DeviantartEclipseAPI:
         }
         return self._call(endpoint, params)
 
-    def deviants_you_watch(self, user_id, _type="deviations", archive=False):
+    def deviants_you_watch(self, user_id, stack_type="deviations", archive=False):
         endpoint = "/_puppy/damessagecentre/stack"
         params = {
-            "stackid": "uq:devwatch:tg={},sender={}".format(_type, user_id),
-            "type": _type,
+            "stackid": "uq:devwatch:tg={},sender={}".format(stack_type, user_id),
+            "type": stack_type,
             "offset": 0,
-            "limit": 50,  # Doing more, then this resets to 10
+            "limit": 50,
         }
         return self._pagination(endpoint, params, archive=archive)
 
@@ -1808,7 +1816,7 @@ class DeviantartEclipseAPI:
     def gallery(self, user, offset=0):
         endpoint = "/_puppy/dashared/gallection/contents"
         params = {
-            "all_folders": True,
+            "all_folder": True,
             "da_minor_version": "20230710",
             "username": user,
             "type": "gallery",

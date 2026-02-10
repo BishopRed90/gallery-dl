@@ -1,21 +1,23 @@
 from __future__ import annotations
+
 from datetime import datetime
+from enum import Enum, auto
 from functools import cached_property
-from typing import Any, Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from pydantic import (
-    BaseModel,
-    Field,
     AliasChoices,
     AliasPath,
-    computed_field,
-    model_validator,
-    model_serializer,
+    BaseModel,
+    Field,
     PlainSerializer,
+    computed_field,
     field_serializer,
+    field_validator,
+    model_serializer,
+    model_validator,
 )
-from enum import Enum, auto
 
 
 ### Supporting Types
@@ -313,16 +315,29 @@ class Deviation(BaseModel):
     @computed_field
     @property
     def extension(self) -> str:
-        return self.media.extension
+        return self.media.extension if self.media else ""
 
     @computed_field
     @property
     def count(self) -> int:
         return 1 + len(self.additional_media)
 
+    @computed_field
+    @property
+    def num(self) -> int:
+        return self.media.position if self.media else 0
+
     @field_serializer("uuid", mode="plain")
     def upper_uuid(self, value: UUID | None) -> str | None:
         if value:
             return str(value).upper()
+        else:
+            return None
+
+    @field_validator("adoptable", mode="before")
+    @classmethod
+    def purchase_adoptable(cls, value: Any) -> Any | None:
+        if value["isOwner"]:
+            return value
         else:
             return None

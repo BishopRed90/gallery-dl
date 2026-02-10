@@ -8,9 +8,11 @@
 
 """Global configuration module"""
 
-import sys
-import os.path
 import logging
+import os.path
+import sys
+from pathlib import Path
+
 from . import util
 
 log = logging.getLogger("config")
@@ -32,18 +34,23 @@ else:
     _default_configs = [
         "/etc/gallery-dl.conf",
         "${XDG_CONFIG_HOME}/gallery-dl/config.json"
-        if os.environ.get("XDG_CONFIG_HOME") else
-        "${HOME}/.config/gallery-dl/config.json",
+        if os.environ.get("XDG_CONFIG_HOME")
+        else "${HOME}/.config/gallery-dl/config.json",
+        "${XDG_CONFIG_HOME}/gallery-dl/config.yaml"
+        if os.environ.get("XDG_CONFIG_HOME")
+        else "${HOME}/.config/gallery-dl/config.yaml",
         "${HOME}/.gallery-dl.conf",
     ]
 
 
 if util.EXECUTABLE:
     # look for config file in PyInstaller executable directory (#682)
-    _default_configs.append(os.path.join(
-        os.path.dirname(sys.executable),
-        "gallery-dl.conf",
-    ))
+    _default_configs.append(
+        os.path.join(
+            os.path.dirname(sys.executable),
+            "gallery-dl.conf",
+        )
+    )
 
 
 # --------------------------------------------------------------------
@@ -82,8 +89,9 @@ def initialize():
         except OSError as exc:
             log.debug("%s: %s", exc.__class__.__name__, exc)
     else:
-        log.error("Unable to create a new configuration file "
-                  "at any of the default paths")
+        log.error(
+            "Unable to create a new configuration file at any of the default paths"
+        )
         return 1
 
     log.info("Created a basic configuration file at '%s'", path)
@@ -107,6 +115,7 @@ def open_extern():
             openers = (editor,) + openers
 
     import shutil
+
     for opener in openers:
         if opener := shutil.which(opener):
             break
@@ -122,8 +131,7 @@ def open_extern():
             with open(path, encoding="utf-8") as fp:
                 util.json_loads(fp.read())
         except Exception as exc:
-            log.warning("%s when parsing '%s': %s",
-                        exc.__class__.__name__, path, exc)
+            log.warning("%s when parsing '%s': %s", exc.__class__.__name__, path, exc)
             return 2
 
     return retcode
@@ -167,14 +175,14 @@ def remap_categories():
     cmap = opts.get("config-map")
     if cmap is None:
         cmap = (
-            ("coomerparty" , "coomer"),
-            ("kemonoparty" , "kemono"),
+            ("coomerparty", "coomer"),
+            ("kemonoparty", "kemono"),
             ("giantessbooru", "sizebooru"),
-            ("koharu"      , "schalenetwork"),
-            ("naver"       , "naver-blog"),
-            ("chzzk"       , "naver-chzzk"),
+            ("koharu", "schalenetwork"),
+            ("naver", "naver-blog"),
+            ("chzzk", "naver-chzzk"),
             ("naverwebtoon", "naver-webtoon"),
-            ("pixiv"       , "pixiv-novel"),
+            ("pixiv", "pixiv-novel"),
         )
     elif not cmap:
         return
@@ -189,17 +197,26 @@ def remap_categories():
 def load(files=None, strict=False, loads=util.json_loads, conf=_config):
     """Load JSON configuration files"""
     for pathfmt in files or _default_configs:
-        path = util.expand_path(pathfmt)
+        path = Path(util.expand_path(pathfmt))
+        if not path.exists():
+            continue
+
         try:
-            with open(path, encoding="utf-8") as fp:
-                config = loads(fp.read())
+            match path.suffix:
+                case ".json":
+                    loads = util.json_loads
+                case ".yaml" | ".yml":
+                    import yaml
+
+                    loads = yaml.safe_load
+            with path.open(encoding="utf-8") as config_file:
+                config = loads(config_file.read())
         except OSError as exc:
             if strict:
                 log.error(exc)
                 raise SystemExit(1)
         except Exception as exc:
-            log.error("%s when loading '%s': %s",
-                      exc.__class__.__name__, path, exc)
+            log.error("%s when loading '%s': %s", exc.__class__.__name__, path, exc)
             if strict:
                 raise SystemExit(2)
         else:
@@ -239,7 +256,14 @@ def interpolate(path, key, default=None, conf=_config):
         for p in path:
             conf = conf[p]
             if key in conf:
-                default = conf[key]
+                if (
+                    isinstance(conf[key], dict)
+                    and conf[key].get("_merge")
+                    and isinstance(default, dict)
+                ):
+                    default = default | conf[key]
+                else:
+                    default = conf[key]
     except Exception:
         pass
     return default
@@ -330,7 +354,7 @@ def unset(path, key, conf=_config):
         pass
 
 
-class apply():
+class apply:
     """Context Manager: apply a collection of key-value pairs"""
 
     def __init__(self, kvlist):
