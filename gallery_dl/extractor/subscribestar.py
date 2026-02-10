@@ -11,12 +11,13 @@
 import pathlib
 from abc import abstractmethod
 
-from .common import Extractor, Message
-from bs4 import BeautifulSoup, ResultSet, Tag, PageElement
-from .. import text, util, exception
-from ..cache import cache
+from bs4 import BeautifulSoup, PageElement, ResultSet, Tag
 
-BASE_PATTERN = r"(?:https?://)?(?:www\.)?subscribestar\.(com|adult)"
+from .. import exception, text, util
+from ..cache import cache
+from .common import Extractor, Message
+
+BASE_PATTERN = r"(?:https?://)?(?:www\.)?subscribestar\.(?P<tld>com|adult)"
 
 
 class SubscribeStarExtractor(Extractor):
@@ -32,8 +33,7 @@ class SubscribeStarExtractor(Extractor):
     _warning: bool = True
 
     def __init__(self, match):
-        tld, self.item, self.params = match.groups()
-        if tld == "adult":
+        if match.group("tld") == "adult":
             self.root = "https://subscribestar.adult"
             self.cookies_domain = ".subscribestar.adult"
             self.subcategory += "-adult"
@@ -61,7 +61,9 @@ class SubscribeStarExtractor(Extractor):
                 text.nameext_from_url(item.get("name") or item["url"], item)
                 if item["original_filename"] and not item["extension"]:
                     item["extension"] = item["original_filename"].split(".")[-1]
-                    item["original_filename"] = ".".join(item["original_filename"].split(".")[:-1])
+                    item["original_filename"] = ".".join(
+                        item["original_filename"].split(".")[:-1]
+                    )
                 if item["url"][0] == "/":
                     item["url"] = self.root + item["url"]
                 yield Message.Url, item["url"], item
@@ -297,7 +299,9 @@ class SubscribeStarExtractor(Extractor):
         #         '<div class="post-actions">'), '?tag=', '"')),
         # }
 
-    def _avatar_from_post(self, user_id: int = None) -> tuple[dict, PageElement] | tuple[None, None]:
+    def _avatar_from_post(
+        self, user_id: int = None
+    ) -> tuple[dict, PageElement] | tuple[None, None]:
         containers = self.soup.find_all("a", {"class": "post-avatar"})
         for container in containers:
             avatar = container.find(
@@ -463,12 +467,11 @@ class SubscribeStarPostExtractor(SubscribeStarExtractor):
     """Extractor for media from a single SubscribeStar post"""
 
     subcategory = "post"
-    pattern = BASE_PATTERN + r"/posts/(\d+)"
+    pattern = BASE_PATTERN + r"/posts/(?P<post_id>\d+)"
     example = "https://www.subscribestar.com/posts/12345"
 
     def posts(self) -> ResultSet[Tag]:
-        url = f"{self.root}/posts/{self.item}"
-        response = self.request(url)
+        response = self.request(self.url)
         self.soup = BeautifulSoup(response.text, "html.parser")
 
         return self.soup.select("div.post.wrapper")
