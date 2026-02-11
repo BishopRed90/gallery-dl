@@ -62,7 +62,10 @@ class SubscribeStarExtractor(Extractor):
                 if not item.get("type") == "avatar":
                     item["num"] = num
                 text.nameext_from_url(item.get("name") or item["url"], item)
-                if item["original_filename"] and not item["extension"]:
+                if item["original_filename"] and (
+                    not item["extension"]
+                    or item["original_filename"].endswith(item["extension"])
+                ):
                     item["extension"] = item["original_filename"].split(".")[-1]
                     item["original_filename"] = ".".join(
                         item["original_filename"].split(".")[:-1]
@@ -99,7 +102,21 @@ class SubscribeStarExtractor(Extractor):
             elif journals == "html":
                 for link in post_html.find_all("a"):
                     link["href"] = self.root + link["href"]
-                post_body = post_html.find("div", class_=["section-body", "post-body"])
+
+                if post_body := post_html.find("div", class_=["section-body"]):
+                    pass
+                elif body_parts := post_html.find_all(
+                    "div", class_=["post-body", "post_tags", "post-actions"]
+                ):
+                    post_body = f"""
+                    <div class="section-body">
+                    {"".join([str(body_part) for body_part in body_parts])}
+                    </div>
+                    """
+                else:
+                    raise ValueError
+
+                # post_body = post_html.find("div", class_=["section-body", "post-body"])
 
                 # TODO - Extra Avatar Work
                 avatars = self._avatar_from_post(post_html, data)
@@ -115,10 +132,8 @@ class SubscribeStarExtractor(Extractor):
 
                     avatar_path = (
                         "../"
-                        + pathlib.Path(avatar_info["_gdl_path"].directory).name
-                        + "/"
-                        + avatar["avatar_name"]
-                        + ".jpg"
+                        + pathlib.Path(avatar_info["_gdl_path"].path).parent.name
+                        + f"/{avatar_info['_gdl_path'].filename}"
                     )
                     avatar["element"]["src"] = avatar_path
 
@@ -240,6 +255,8 @@ class SubscribeStarExtractor(Extractor):
         if attachments := html.find_all("figure", class_="attachment"):
             for attachment in attachments:
                 info = util.json_loads(attachment["data-trix-attachment"])
+                if info.get("uploadId") is None:
+                    continue
                 info["url"] = attachment.find("img")["src"]
                 info["type"] = "attachment"
                 info["id"] = info["uploadId"]
@@ -296,7 +313,10 @@ class SubscribeStarExtractor(Extractor):
 
         post_date = html.find(["div"], ["section-title_date", "post-date"]).text.strip()
         post_title = html.select("div.post-title") if None else html.find("h1")
-
+        tags = []
+        if tag_element := html.find(["div"], ["post_tags"]):
+            for tag in tag_element.findChildren("a", recursive=False):
+                tags.append(tag.text)
         if _post_id := html.select("[data-post_id]"):
             post_id = _post_id[0]["data-post_id"]
         else:
@@ -309,15 +329,7 @@ class SubscribeStarExtractor(Extractor):
             "author_name": author_name,
             "author_bio": author_bio.text.strip() if author_bio else "",
             "date": self._parse_datetime(post_date),
-            "tags": list(
-                text.extract_iter(
-                    extr(
-                        '<div class="post_tags for-post">', '<div class="post-actions">'
-                    ),
-                    "?tag=",
-                    '"',
-                )
-            ),
+            "tags": tags,
         }
 
     def _avatar_from_post(self, post_html, post_data) -> dict[Any, Any]:
