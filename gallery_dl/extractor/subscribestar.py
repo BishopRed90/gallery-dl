@@ -10,6 +10,8 @@
 
 import pathlib
 from abc import abstractmethod
+from enum import auto
+from typing import Any, Generator
 
 from bs4 import BeautifulSoup, PageElement, ResultSet, Tag
 
@@ -46,6 +48,7 @@ class SubscribeStarExtractor(Extractor):
         for post_html in self.posts():
             media = self._media_from_post(post_html)
             data = self._data_from_post(post_html)
+
             if not data.get("post_id"):
                 continue
             data["count"] = len(media)
@@ -85,13 +88,6 @@ class SubscribeStarExtractor(Extractor):
                     rel_path
                 )
 
-            for link in post_html.find_all("img"):
-                link["src"] = _re_link_cache.get(link["src"], "")
-                if not link["src"]:
-                    link["alt"] = ""
-                else:
-                    link["onclick"] = "window.open(this.src)"
-
             if gallery := post_html.find("div", {"class": "uploads-images"}):
                 _test = util.json_dumps(media)
                 gallery["data-gallery"] = util.json_dumps(media)
@@ -105,21 +101,48 @@ class SubscribeStarExtractor(Extractor):
                     link["href"] = self.root + link["href"]
                 post_body = post_html.find("div", class_=["section-body", "post-body"])
 
-                avatar, author_avatar = self._avatar_from_post(data["author_id"])
-                if author_avatar:
-                    author_avatar.attrs["src"] = "../Pictures/avatar.jpg"
+                # TODO - Extra Avatar Work
+                avatars = self._avatar_from_post(post_html, data)
+                for avatar in avatars.values():
+                    avatar_info = item.copy()
+                    avatar_info.update(data)
+                    avatar_info["type"] = "Avatar"
+                    avatar_info["url"] = avatar["url"]
+                    avatar_info["filename"] = avatar["avatar_name"]
+                    yield Message.Url, avatar["url"], avatar_info
+                    if avatar["userId"] == data["author_id"]:
+                        author_avatar = avatar["element"]
+
+                    avatar_path = (
+                        "../"
+                        + pathlib.Path(avatar_info["_gdl_path"].directory).name
+                        + "/"
+                        + avatar["avatar_name"]
+                        + ".jpg"
+                    )
+                    avatar["element"]["src"] = avatar_path
+
+                for link in post_html.find_all(
+                    "img", attrs={"data-type": lambda x: x != "avatar"}
+                ):
+                    link["src"] = _re_link_cache.get(link["src"], "")
+                    if not link["src"]:
+                        link["alt"] = ""
+                    else:
+                        link["onclick"] = "window.open(this.src)"
 
                 post_info = {
                     "post_body": str(post_body if not None else post_html),
                     "author_avatar": author_avatar,
                 }
+
                 if post_info["post_body"]:
                     yield self._commit_post_html(data, post_info)
                 else:
                     yield self._commit_journal_text(data)
 
     @abstractmethod
-    def posts(self):
+    def posts(self) -> Generator[Tag, None, None]:
         """Yield HTML content of all relevant posts"""
 
     def request(self, url, **kwargs):
@@ -259,43 +282,21 @@ class SubscribeStarExtractor(Extractor):
         #         })
         return list(media.values())
 
-    # def _data_from_post(self, html):
-    #     extr = text.extract_from(html)
-    #     return {
-    #         "post_id": text.parse_int(extr('data-id="', '"')),
-    #         "author_id": text.parse_int(extr('data-user-id="', '"')),
-    #         "author_name": text.unescape(extr('href="/', '"')),
-    #         "author_nick": text.unescape(extr(">", "<")),
-    #         "date": self._parse_datetime(
-    #             extr('class="post-date">', "</").rpartition(">")[2]
-    #         ),
-    #         "content": extr(
-    #             '<div class="post-content" data-role="post_content-text">',
-    #             '</div><div class="post-uploads for-youtube"',
-    #         ).strip(),
-    #         "tags": list(
-    #             text.extract_iter(
-    #                 extr(
-    #                     '<div class="post_tags for-post">', '<div class="post-actions">'
-    #                 ),
-    #                 "?tag=",
-    #                 '"',
-    #             )
-    #         ),
-    #     }
-
     def _data_from_post(self, html):
         extr = text.extract_from(html)
+        author_bio = html.find(
+            "div", ["star_link-types", "profile_main_info-description"]
+        )
         author_name = html.find(
             ["a", "div"], ["profile_main_info-name", "star_link-name", "post-user"]
         ).text.strip()
         author_id = html.find(
             ["a", "div"], ["star_link-avatar", "post-avatar"]
         ).next.get("data-user-id")
+
+        post_date = html.find(["div"], ["section-title_date", "post-date"]).text.strip()
         post_title = html.select("div.post-title") if None else html.find("h1")
-        author_bio = html.find(
-            "div", ["star_link-types", "profile_main_info-description"]
-        )
+
         if _post_id := html.select("[data-post_id]"):
             post_id = _post_id[0]["data-post_id"]
         else:
@@ -307,13 +308,7 @@ class SubscribeStarExtractor(Extractor):
             "author_id": author_id,
             "author_name": author_name,
             "author_bio": author_bio.text.strip() if author_bio else "",
-            "date": self._parse_datetime(
-                extr('class="post-date">', "</").rpartition(">")[2]
-            ),
-            "content": extr(
-                '<div class="post-content" data-role="post_content-text">',
-                '</div><div class="post-uploads for-youtube"',
-            ).strip(),
+            "date": self._parse_datetime(post_date),
             "tags": list(
                 text.extract_iter(
                     extr(
@@ -325,38 +320,30 @@ class SubscribeStarExtractor(Extractor):
             ),
         }
 
-    def _avatar_from_post(
-        self, user_id: int = None
-    ) -> tuple[dict, PageElement] | tuple[None, None]:
-        containers = self.soup.find_all("a", {"class": "post-avatar"})
-        for container in containers:
-            avatar = container.find(
-                "img", {"data-type": "avatar", "src": True, "data-user-id": user_id}
-            )
-            if avatar.attrs.get("src"):
-                return (
-                    {
-                        "url": avatar["src"],
-                        "original_filename": "avatar",
-                        "type": "avatar",
-                    },
-                    avatar,
-                )
+    def _avatar_from_post(self, post_html, post_data) -> dict[Any, Any]:
+        avatars = {}
+        for avatar in post_html.find_all(
+            "img",
+            {
+                "data-type": "avatar",
+                "src": True,
+            },  # , "data-user-id": user_id}
+        ):
+            if avatar["data-user-id"] == post_data["author_id"]:
+                filename = f"avatar_{post_data['author_name']}"
+            elif avatar.get("alt"):
+                filename = f"avatar_{avatar.get('alt')}"
+            else:
+                filename = f"avatar_{avatar['data-user-id']}"
+            avatars[avatar.get("alt")] = {
+                "url": avatar.get("src", None),
+                "avatar_name": filename,
+                "type": "avatar",
+                "element": avatar,
+                "userId": avatar["data-user-id"],
+            }
 
-        return None, None
-
-        # for avatar in self.soup.find_all(
-        #     "img",
-        #     {"alt": True, "data-user-id": True if user_id is None else str(user_id)},
-        # ):
-        #     avatars.append(
-        #         {
-        #             "url": avatar["src"],
-        #             "original_filename": f"avatar_{avatar['alt']}",
-        #             "type": "avatar",
-        #         }
-        #     )
-        # return avatar
+        return avatars
 
     def _replace_links(self, post_html, links):
         pass
@@ -463,13 +450,8 @@ class SubscribeStarUserExtractor(SubscribeStarExtractor):
     pattern = BASE_PATTERN + r"/(?!posts/)([^/?#]+)(\?tag=[\w]+)?"
     example = "https://www.subscribestar.com/USER/tag=TAGNAME"
 
-    def posts(self):
-        if self.params:
-            url = "{}/{}{}".format(self.root, self.item, self.params)
-        else:
-            url = "{}/{}".format(self.root, self.item)
-
-        page = self.request(url).text
+    def posts(self) -> Generator[Tag, None, None]:
+        page = self.request(self.url).text
         # needle_next_page = 'data-role="infinite_scroll-next_page" href="'
         # page = self.request(f"{self.root}/{self.item}").text
 

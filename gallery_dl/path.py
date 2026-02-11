@@ -8,10 +8,11 @@
 
 """Filesystem path handling"""
 
+import functools
 import os
 import shutil
-import functools
-from . import util, formatter, exception
+
+from . import exception, formatter, util
 
 WINDOWS = util.WINDOWS
 EXTENSION_MAP = {
@@ -345,6 +346,9 @@ class PathFormat():
 
     def finalize(self):
         """Move tempfile to its target location"""
+        self.set_directory(self.kwdict)
+        self.build_filename(self.kwdict)
+        self.build_path()
         if self.delete:
             self.delete = False
             os.unlink(self.temppath)
