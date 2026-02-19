@@ -57,7 +57,7 @@ class DeviantartExtractor(Extractor, ABC):
         self.group: str | None = None
         self.username = (match.group("base_user") or match.group("user") or "").lower()
         # self.user: str = (match[1] or match[2] or "").lower()
-        self.offset: int = 0
+        self.offset: int = self.config("offset", 0)
 
     def _init(self):
         # region ##### Config Vars #####
@@ -211,6 +211,11 @@ class DeviantartExtractor(Extractor, ABC):
                 yield Message.Directory, deviation.model_dump()
                 yield Message.Url, deviation.media.src, deviation.model_dump()
                 deviation.media = _original_media
+
+            if deviation.adoptable and deviation.adoptable.is_owner:
+                deviation.media.extension = "zip"
+                yield Message.Directory, deviation.model_dump()
+                yield Message.Url, deviation.adoptable.url, deviation.model_dump()
 
             preview_rules = [
                 (

@@ -153,8 +153,8 @@ class DeviationPremiumFolder(BaseModel):
 class Adoptable(BaseModel):
     id: int = Field(validation_alias=AliasChoices("deviationId", "deviation_id"))
     url: str = Field(validation_alias=AliasChoices("assetSourceUrl", "assetSourceUrl"))
-    is_owner: bool = Field(validation_alias=AliasChoices("isCreator", "is_creator"))
-    is_creator: bool = Field(validation_alias=AliasChoices("isOwner", "is_owner"))
+    is_owner: bool = Field(validation_alias=AliasChoices("isOwner", "is_owner"))
+    is_creator: bool = Field(validation_alias=AliasChoices("isCreator", "is_creator"))
 
 
 class DeviationStats(BaseModel):
