@@ -229,7 +229,7 @@ class DeviantartExtractor(Extractor, ABC):
                     and deviation.premium_content.assets
                     and len(deviation.premium_content.assets) < deviation.count
                 ),
-                deviation.premium_content and not deviation.premium_content.purchased,
+                # deviation.premium_content and not deviation.premium_content.purchased,
                 not deviation.premium_content,
             ]
             if any(preview_rules):
