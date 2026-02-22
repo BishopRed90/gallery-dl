@@ -8,17 +8,89 @@
 
 """Extractors for https://www.subscribestar.com/"""
 
+import inspect
+import os.path
 import pathlib
 from abc import abstractmethod
-from typing import Any, Generator
+from dataclasses import asdict, dataclass, field
+from typing import Any, Generator, Literal
 
 from bs4 import BeautifulSoup, ResultSet, Tag
+from pydantic import BaseModel
 
 from .. import exception, text, util
 from ..cache import cache
 from .common import Extractor, Message
 
 BASE_PATTERN = r"(?:https?://)?(?:www\.)?subscribestar\.(?P<tld>com|adult)"
+
+
+# region Dataclasses
+
+
+class MediaItem(BaseModel):
+    url: str
+    type: Literal["image", "avatar", "cover", "preview"]
+    extension: str | None = None
+    filename: str | None = None
+
+    @classmethod
+    def from_dict(cls, env):
+        return cls(
+            **{k: v for k, v in env.items() if k in inspect.signature(cls).parameters}
+        )
+
+
+class PostData(BaseModel):
+    author_bio: str
+    author_name: str
+    author_id: str
+
+    post_date: str
+    post_title: str
+    post_id: int | None
+
+    tags: list[str]
+
+    @classmethod
+    def from_instance(cls, instance, strict: bool = False, **kwargs):
+        args = asdict(instance)
+        args.update(kwargs)
+        if strict:
+            return cls(**args)
+        else:
+            return cls(
+                **{
+                    k: v
+                    for k, v in args.items()
+                    if k in inspect.signature(cls).parameters
+                }
+            )
+
+    @property
+    def count(self):
+        return len(self.media)
+
+
+class AvatarItem(MediaItem, PostData):
+    user_id: int = None
+
+    @property
+    def filename(self):
+        return f"{self.type}_{self.user_id}.{self.extension}"
+
+
+class GalleryItem(PostData, MediaItem):
+    id: int
+    original_filename: str
+    created_at: str
+    gallery_preview_url: str
+    width: str
+    height: str
+    num: int = 1
+
+
+# endregion Dataclasses
 
 
 class SubscribeStarExtractor(Extractor):
@@ -45,72 +117,80 @@ class SubscribeStarExtractor(Extractor):
     def items(self):
         self.login()
         for post_html in self.posts():
-            media = self._media_from_post(post_html)
             post_data = self._data_from_post(post_html)
+            media = self._media_from_post(post_html, post_data)
 
-            if not post_data.get("post_id"):
-                continue
-            post_data["count"] = len(media)
-            yield Message.Directory, "", post_data
+            yield Message.Directory, "", post_data.model_dump()
 
-            item = None
-            for num, _item in enumerate(media, 1):
-                item = _item.copy()
-                item.update(post_data)
+            images = []
+            for num, item in enumerate(media, 1):
+                item.num = num
 
-                item["num"] = num
-                text.nameext_from_url(item.get("name") or item["url"], item)
-                if item["original_filename"] and (
-                    not item["extension"]
-                    or item["original_filename"].endswith(item["extension"])
-                ):
-                    item["extension"] = item["original_filename"].split(".")[-1]
-                    item["original_filename"] = ".".join(
-                        item["original_filename"].split(".")[:-1]
+                if item.url.startswith("/"):
+                    item.url = self.root + item.url
+
+                if item.original_filename:
+                    item.extension = item.original_filename.split(".")[-1]
+                    item.filename = ".".join(item.original_filename.split(".")[:-1])
+
+                # Download the normal image and link
+                yield Message.Url, item.url, item.model_dump()
+                try:
+                    # Attempt to get the previews if the files are too large or they are requested
+                    if (
+                        self.config("previews")
+                        or os.path.getsize(item_dict["_gdl_path"].path) / 1024 / 1024
+                        > 4
+                    ):
+                        # TODO fix this up so less copying
+                        item.type = "preview"
+                        item_dict = asdict(item)
+                        yield Message.Url, item.gallery_preview_url, item_dict
+                        item.type = "image"
+                        item.filename = item["_gdl_path"].filename
+
+                except FileNotFoundError:
+                    pass
+
+                if isinstance(item, GalleryItem):
+                    images.append(
+                        {
+                            "id": item.id,
+                            "filename": item.filename,
+                            "width": item.width,
+                            "height": item.height,
+                            "type": item.width,
+                        }
                     )
-                if item["url"][0] == "/":
-                    item["url"] = self.root + item["url"]
-                yield Message.Url, item["url"], item
 
-                rel_path = "{{image_path}}/" + pathlib.Path(item["_gdl_path"].path).name
-                _item["url"] = _item["gallery_preview_url"] = _item["preview_url"] = (
-                    rel_path
-                )
-
-            journals = self.config("posts", "html")
-            if journals == "text":
+            if self.config("posts", "html") != "html":
                 yield self._commit_journal_text(post_data)
-            elif journals == "html":
+            else:
                 # 1. Get Post Header
-
                 # TODO - Make this not a separate call if necessary
                 post_header = self._get_profile_header(post_data)
 
                 # 2 Handle Post-Body
-                if (
-                    post_body := post_html.find("div", class_=["section-body"])
-                ) is None:
-                    body_parts = post_html.find_all(
-                        "div", class_=["post-body", "post_tags", "post-actions"]
-                    )
-                    post_body = self.soup.new_tag(
-                        "div", attrs={"class": "section-body"}
-                    )
-                    for body_part in body_parts:
-                        if body_part.get("class") == ["post-actions"]:
-                            comment_container = body_part.find(
-                                "div", attrs={"data-role": "post-comments_list"}
-                            )
-                            post_comments = self._get_post_comments(
-                                post_data.get("post_id")
-                            )
-                            comment_container.append(post_comments)
-                        post_body.append(body_part)
+                body_parts = post_html.find_all(
+                    "div", class_=["post-body", "post_tags", "post-actions"]
+                )
+                post_body = self.soup.new_tag("div", attrs={"class": "section-body"})
+                for body_part in body_parts:
+                    if body_part.get("class") == ["post-actions"]:
+                        comment_container = body_part.find(
+                            "div", attrs={"data-role": "post-comments_list"}
+                        )
+                        post_comments = self._get_post_comments(
+                            post_data.get("post_id")
+                        )
+                        comment_container.append(post_comments)
+                    post_body.append(body_part)
 
                 # 3 Build Post
                 post_elements = {
                     "post_header": post_header,
                     "post_body": post_body if not None else post_html,
+                    "var_filename": var_filename,
                 }
                 post, post_data = self._build_post_html(post_data, post_elements)
 
@@ -125,6 +205,25 @@ class SubscribeStarExtractor(Extractor):
                 # 6. Re-Link all hrefs back to the website
                 for link in post.find_all("a"):
                     link["href"] = self.root + link["href"]
+
+                # 7. Commit Vars
+                post_data["extension"] = "js"
+                post_data["type"] = "post"
+                yield Message.Directory, "", post_data
+                avatar_path = pathlib.Path(post_data["_gdl_path"].directory)
+                # Path('/usr/var/log').relative_to('/usr/var/log/')
+                var_file = HTML_VAR_TEMPLATE.format(
+                    post_id=post_data["post_id"],
+                    avatar_path="../Avatars/",
+                    cover_path="./Header/",
+                    image_path=f"../Pictures/{post_data['post_id']}/",
+                    preview_path=f"../Pictures/{post_data['post_id']}/Previews/",
+                    images=util.json_dumps(images),
+                )
+                post_data["extension"] = "js"
+                post_data["type"] = "post"
+                yield Message.Url, var_file, post_data
+                var_filename = post_data["_gdl_path"].filename
 
                 # 7. Commit Post
                 post_data["extension"] = "html"
@@ -221,14 +320,17 @@ class SubscribeStarExtractor(Extractor):
         # return cookies
         return {cookie.name: cookie.value for cookie in response.cookies}
 
-    @staticmethod
-    def _media_from_post(html) -> list[dict]:
+    def _media_from_post(
+        self, post: Tag, post_data: PostData
+    ) -> list[GalleryItem | AvatarItem]:
         media = {}
-        if gallery := html.find("div", {"class": "uploads-images"}):
+        if gallery := post.find("div", {"class": "uploads-images"}):
             for image in util.json_loads(gallery["data-gallery"]):
-                media[image["id"]] = image
+                media[image["id"]] = GalleryItem.model_validate(
+                    image | post_data.model_dump()
+                )
 
-        if attachments := html.find_all("figure", class_="attachment"):
+        if attachments := post.find_all("figure", class_="attachment"):
             for attachment in attachments:
                 info = util.json_loads(attachment["data-trix-attachment"])
                 if info.get("uploadId") is None:
@@ -244,8 +346,9 @@ class SubscribeStarExtractor(Extractor):
                 if not media.get(info["uploadId"]):
                     media[info["uploadId"]] = info
 
-        audios = text.extr(html, 'class="uploads-audios"', 'class="post-edit_form"')
-        if audios:
+        if audios := text.extr(
+            post, 'class="uploads-audios"', 'class="post-edit_form"'
+        ):
             for audio in util.re(r'class="audio_preview-data[" ]').split(audios)[1:]:
                 media.append(
                     {
@@ -257,6 +360,30 @@ class SubscribeStarExtractor(Extractor):
                         "type": "audio",
                     }
                 )
+
+        # Avatar and Cover Page
+        if self.config("avatars"):
+            for element in post.find_all(
+                "img",
+                {
+                    "data-type": ["avatar", "cover"],
+                    "src": True,
+                },
+            ):
+                user_id = element["data-user-id"]
+                el_type = element["data-type"]
+
+                if avatar := media.get(el_type + user_id):
+                    continue
+                else:
+                    avatar = AvatarItem(
+                        **post_data.model_dump(),
+                        user_id=int(user_id),
+                        type=el_type,
+                        extension=text.ext_from_url(element["src"]),
+                        url=element["src"],
+                    )
+                    media[el_type + user_id] = avatar
 
         return list(media.values())
         # audios = html.find('div', {"class": ["uploads-audios", "post-edit_form"] })
@@ -275,37 +402,52 @@ class SubscribeStarExtractor(Extractor):
         #         })
         return list(media.values())
 
-    def _data_from_post(self, html):
+    def _data_from_post(self, html) -> PostData:
         author_bio = html.find(
             "div", ["star_link-types", "profile_main_info-description"]
         )
-        author_name = html.find(
-            ["a", "div"], ["profile_main_info-name", "star_link-name", "post-user"]
-        ).text.strip()
-        author_id = html.find(
-            ["a", "div"], ["star_link-avatar", "post-avatar"]
-        ).next.get("data-user-id")
+        # author_name = html.find(
+        #     ["a", "div"], ["profile_main_info-name", "star_link-name", "post-user"]
+        # ).text.strip()
+        # author_id = html.find(
+        #     ["a", "div"], ["star_link-avatar", "post-avatar"]
+        # ).next.get("data-user-id")
 
-        post_date = html.find(["div"], ["section-title_date", "post-date"]).text.strip()
+        # post_date = html.find(["div"], ["section-title_date", "post-date"]).text.strip()
         post_title = html.select("div.post-title") if None else html.find("h1")
         tags = []
         if tag_element := html.find(["div"], ["post_tags"]):
             for tag in tag_element.findChildren("a", recursive=False):
                 tags.append(tag.text)
-        if _post_id := html.select("[data-post_id]"):
+        if _post_id := html.find("[data-post_id]"):
             post_id = _post_id[0]["data-post_id"]
         else:
             post_id = None
 
-        return {
-            "post_id": post_id,
-            "post_title": post_title.text.strip() if post_title else "",
-            "author_id": author_id,
-            "author_name": author_name,
-            "author_bio": author_bio.text.strip() if author_bio else "",
-            "date": self._parse_datetime(post_date),
-            "tags": tags,
-        }
+        return PostData(
+            author_bio=author_bio.text.strip() if author_bio else "",
+            author_name=html.find(
+                ["a", "div"], ["profile_main_info-name", "star_link-name", "post-user"]
+            ).text.strip(),
+            author_id=html.find(
+                ["a", "div"], ["star_link-avatar", "post-avatar"]
+            ).next.get("data-user-id"),
+            post_date=html.find(
+                ["div"], ["section-title_date", "post-date"]
+            ).text.strip(),
+            post_title=post_title.text.strip() if post_title else "",
+            post_id=post_id,
+            tags=tags,
+        )
+        # return {
+        #     "post_id": post_id,
+        #     "post_title": post_title.text.strip() if post_title else "",
+        #     "author_id": author_id,
+        #     "author_name": author_name,
+        #     "author_bio": author_bio.text.strip() if author_bio else "",
+        #     "date": self._parse_datetime(post_date),
+        #     "tags": tags,
+        # }
 
     def _relink_avatars(
         self, post, post_data
@@ -376,6 +518,8 @@ class SubscribeStarExtractor(Extractor):
                 post_date=post_data["date"],
                 profile_header=post_elements["post_header"],
                 post_title=post_data["post_title"],
+                post_id=post_data["post_id"],
+                var_filename=post_elements["var_filename"],
             )
             html = BeautifulSoup(html_string, "html.parser")
             return html, post_data
@@ -436,6 +580,7 @@ class SubscribeStarPostExtractor(SubscribeStarExtractor):
         return self.soup.select("div.post.wrapper")
 
 
+# region Templates
 JOURNAL_TEMPLATE_TEXT = """text:{title}
 by {username}, {date}
 
@@ -453,6 +598,8 @@ JOURNAL_TEMPLATE_HTML = """
     <link rel="stylesheet" media="screen"
           href="../../CSS/SubscribeStar.css"
           data-track-change="true"/>
+    <script>
+    </script>
 </head>
 <body>
 <div class="layout for-public is-adult" data-role="popup_anchor" data-view="app#layout" id="root">
@@ -486,6 +633,20 @@ JOURNAL_TEMPLATE_HTML = """
 
 </body>
 <script src="../../CSS/Render.js"></script>
+<script src="./{var_filename}"></script>
 <script src="../../CSS/Gallery.js"></script>
 </html>
 """
+
+HTML_VAR_TEMPLATE = """text:
+let config = {{
+    post_id: {post_id},
+    preview_path: "{preview_path}",
+    image_path: "{image_path}",
+    avatar_path: "{avatar_path}",
+    cover_path: "{cover_path}"
+}}
+const images = {images}
+"""
+
+# endregion Templates
