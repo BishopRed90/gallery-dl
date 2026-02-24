@@ -54,6 +54,8 @@ class PostData(BaseModel):
     post_id: int | None
     title: str
     tags: list[str]
+    gallery_count: int = 0
+    media_count: int = 0
 
     # @classmethod
     # def from_instance(cls, instance, strict: bool = False, **kwargs):
@@ -339,7 +341,6 @@ class SubscribeStarExtractor(Extractor):
         post_body = self.soup.new_tag("div", attrs={"class": "section-body"})
         if body := post.find("div", class_="post-body"):
             post_body.append(body)
-            return False
         if collections := post.find("div", class_="collection_labels"):
             # TODO - see about getting collection links
             collections.find("img")["src"] = ""
@@ -372,6 +373,7 @@ class SubscribeStarExtractor(Extractor):
 
             # Download the normal image and link
             item_data = item.model_dump()
+            yield Message.Directory, "", item.model_dump()
             yield Message.Url, item.url, item_data
             if isinstance(item, GalleryItem):
                 images.append(
@@ -391,6 +393,7 @@ class SubscribeStarExtractor(Extractor):
                 file_limit = self.post_config.get("previews", False)
                 if file_limit is not False and file_size > file_limit:
                     item.type = "preview"
+                    yield Message.Directory, "", item.model_dump()
                     yield Message.Url, item.gallery_preview_url, item.model_dump()
 
             except FileNotFoundError:
@@ -411,9 +414,12 @@ class SubscribeStarExtractor(Extractor):
     def _media_from_post(
         post: Tag, post_data: PostData
     ) -> list[GalleryItem | AvatarItem]:
+        # TODO - Need to work on making this more stable with the count
         media = {}
         if gallery := post.find("div", {"class": "uploads-images"}):
-            for image in util.json_loads(gallery["data-gallery"]):
+            gallery_data = util.json_loads(gallery["data-gallery"])
+            post_data.gallery_count = len(gallery_data)
+            for image in gallery_data:
                 media[image["id"]] = GalleryItem.model_validate(
                     image | post_data.model_dump()
                 )
@@ -446,7 +452,7 @@ class SubscribeStarExtractor(Extractor):
                     "url": text.unescape(text.extr(audio, 'src="', '"')),
                     "type": "audio",
                 }
-
+        post_data.media_count = len(media.values())
         return list(media.values())
 
     def _data_from_post(self, html: Tag) -> PostData:
@@ -551,7 +557,7 @@ class SubscribeStarExtractor(Extractor):
         self, post_data: PostData, post_elements: dict[str, Tag], template: str
     ):
         if not post_elements["post_body"]:
-            self.log.warning("%s: Empty post content", post_data["index"])
+            self.log.warning("%s: Empty post content", post_data.post_id)
             return None
         else:
             html_string = template.format(
@@ -595,24 +601,32 @@ class SubscribeStarExtractor(Extractor):
         else:
             preview_path = image_path
 
-        data["extension"] = "js"
+        # Webpage Files
+        data["extension"] = "html"
         data["type"] = "post"
         yield Message.Directory, "", data
-        file_path = Path(data["_gdl_path"].directory)
+        post_path = Path(data["_gdl_path"].directory)
+
+        data["extension"] = "js"
+        data["type"] = "vars"
+        yield Message.Directory, "", data
+        vars_path = Path(data["_gdl_path"].directory)
 
         var_file = HTML_VAR_TEMPLATE.format(
             post_id=post_data.post_id,
-            avatar_path=avatar_path.relative_to(file_path, walk_up=True),
-            cover_path=cover_path.relative_to(file_path, walk_up=True),
-            image_path=image_path.relative_to(file_path, walk_up=True),
-            preview_path=preview_path.relative_to(file_path, walk_up=True),
+            avatar_path=avatar_path.relative_to(post_path, walk_up=True),
+            cover_path=cover_path.relative_to(post_path, walk_up=True),
+            image_path=image_path.relative_to(post_path, walk_up=True),
+            preview_path=preview_path.relative_to(post_path, walk_up=True),
+            vars_path=vars_path.relative_to(post_path, walk_up=True),
             images=util.json_dumps(images),
             avatars=util.json_dumps(avatars),
         )
         yield Message.Url, var_file, data
 
         vars_container = post.find("script", class_="post_vars")
-        vars_container["src"] = f"./{data['_gdl_path'].filename}"
+        vars_path = vars_path.relative_to(post_path, walk_up=True)
+        vars_container["src"] = f"{vars_path}/{data['_gdl_path'].filename}"
 
         return data["_gdl_path"].filename
 
@@ -679,9 +693,7 @@ class SubscribeStarCollectionsExtractor(SubscribeStarExtractor):
         self.collection_id: int = match.groupdict().get("collection_id")
         self.username: str = match.group("user")
 
-    def posts(self) -> Generator[Tag, None, None]:
-        self.log.error("Not Supported")
-        return
+    def posts(self) -> Generator[Tag, Any, None]:
         if self.collection_id is None:
             # Get Collection IDs
             page = self.request(self.url).text
@@ -698,17 +710,34 @@ class SubscribeStarCollectionsExtractor(SubscribeStarExtractor):
             page = self.request(url).text
             while True:
                 self.soup = BeautifulSoup(page, "html.parser")
-                if posts := self.soup.find_all("div", class_="collection_post"):
-                    yield from posts
-
-                    url = self.soup.find("div", {"class": "posts-more"})
-                    if not url:
-                        return
-                    page = self.request(self.root + text.unescape(url["href"])).json()[
-                        "html"
-                    ]
+                if posts := self.soup.find_all("div", class_=["collection_post"]):
+                    for post in posts:
+                        post_url = f"{self.root}/posts/{post['data-post-id']}"
+                        response = self.request(post_url)
+                        post_soup = BeautifulSoup(response.text, "html.parser")
+                        yield from post_soup.find_all("div", class_=["post", "wrapper"])
                 else:
                     break
+
+                url = self.soup.find("div", {"class": "posts-more"})
+                if not url:
+                    break
+                page = self.request(self.root + text.unescape(url["href"])).json()[
+                    "html"
+                ]
+            # while True:
+            #     self.soup = BeautifulSoup(page, "html.parser")
+            #     if posts := self.soup.find_all("div", class_="collection_post"):
+            #         yield from posts
+            #
+            #         url = self.soup.find("div", {"class": "posts-more"})
+            #         if not url:
+            #             return
+            #         page = self.request(self.root + text.unescape(url["href"])).json()[
+            #             "html"
+            #         ]
+            #     else:
+            #         break
 
 
 class SubscribeStarPostExtractor(SubscribeStarExtractor):
@@ -747,7 +776,7 @@ JOURNAL_HEADER_TEMPLATE_HTML = """
     <link rel="stylesheet" media="screen"
           href="../../CSS/SubscribeStar.css"
           data-track-change="true"/>
-    <script class="post_vars"></script>
+    <script class="post_vars" src=""></script>
 </head>
 <body>
 <div class="layout for-public is-adult" data-role="popup_anchor" data-view="app#layout" id="root">
@@ -792,7 +821,7 @@ JOURNAL_SIDEBAR_TEMPLATE_HTML = """
     <link rel="stylesheet" media="screen"
           href="../../CSS/SubscribeStar.css"
           data-track-change="true"/>
-    <script class="post_vars"></script>
+    <script class="post_vars" src=""></script>
 </head>
 <body>
 <div class="layout for-public is-adult" data-role="popup_anchor" data-view="app#layout" id="root">
