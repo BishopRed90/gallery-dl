@@ -8,11 +8,10 @@
 
 """Extractors for https://www.subscribestar.com/"""
 
+import datetime
 import inspect
-import os.path
-import pathlib
-from abc import abstractmethod
-from dataclasses import asdict, dataclass, field
+import os
+from pathlib import Path
 from typing import Any, Generator, Literal
 
 from bs4 import BeautifulSoup, ResultSet, Tag
@@ -32,7 +31,7 @@ class MediaItem(BaseModel):
     url: str
     type: Literal["image", "avatar", "cover", "preview"]
     extension: str | None = None
-    filename: str | None = None
+    name: str | None = None
 
     @classmethod
     def from_dict(cls, env):
@@ -40,40 +39,41 @@ class MediaItem(BaseModel):
             **{k: v for k, v in env.items() if k in inspect.signature(cls).parameters}
         )
 
+    @property
+    def filename(self):
+        return f"{self.name}.{self.extension}"
+
 
 class PostData(BaseModel):
+    author: str
     author_bio: str
-    author_name: str
     author_id: str
-
-    post_date: str
-    post_title: str
+    collection_name: str | None = None
+    collection_id: int | None = None
+    date: datetime.datetime
     post_id: int | None
-
+    title: str
     tags: list[str]
 
-    @classmethod
-    def from_instance(cls, instance, strict: bool = False, **kwargs):
-        args = asdict(instance)
-        args.update(kwargs)
-        if strict:
-            return cls(**args)
-        else:
-            return cls(
-                **{
-                    k: v
-                    for k, v in args.items()
-                    if k in inspect.signature(cls).parameters
-                }
-            )
-
-    @property
-    def count(self):
-        return len(self.media)
+    # @classmethod
+    # def from_instance(cls, instance, strict: bool = False, **kwargs):
+    #     args = asdict(instance)
+    #     args.update(kwargs)
+    #     if strict:
+    #         return cls(**args)
+    #     else:
+    #         return cls(
+    #             **{
+    #                 k: v
+    #                 for k, v in args.items()
+    #                 if k in inspect.signature(cls).parameters
+    #             }
+    #         )
 
 
 class AvatarItem(MediaItem, PostData):
-    user_id: int = None
+    user_id: int
+    username: str
 
     @property
     def filename(self):
@@ -107,131 +107,88 @@ class SubscribeStarExtractor(Extractor):
 
     def __init__(self, match):
         if match.group("tld") == "adult":
-            self.root = "https://subscribestar.adult"
-            self.cookies_domain = ".subscribestar.adult"
+            self.root: str = "https://subscribestar.adult"
+            self.cookies_domain: str = ".subscribestar.adult"
             self.subcategory += "-adult"
-            self.soup = BeautifulSoup("", "html.parser")
-
         Extractor.__init__(self, match)
+        self.soup: BeautifulSoup = BeautifulSoup("", "html.parser")
+        self.post_config: dict = self.config("posts", {})
 
     def items(self):
         self.login()
+        author_element = None
         for post_html in self.posts():
             post_data = self._data_from_post(post_html)
-            media = self._media_from_post(post_html, post_data)
-
+            if post_html.find("div", class_=["post", "is-locked"]):
+                self.log.warning(
+                    f"Post is Locked: {post_data.post_id} - {post_data.title}"
+                )
+                continue
             yield Message.Directory, "", post_data.model_dump()
 
-            images = []
-            for num, item in enumerate(media, 1):
-                item.num = num
+            if self.post_config.get("style") == "html":
+                if self.post_config.get("cover") and author_element is None:
+                    author_element = self._get_profile_header(post_data.author)
+                    post_template = JOURNAL_HEADER_TEMPLATE_HTML
+                elif author_element is None:
+                    author_element = self.get_post_sidebar(post_data.post_id)
+                    post_template = JOURNAL_SIDEBAR_TEMPLATE_HTML
+                else:
+                    post_template = JOURNAL_HEADER_TEMPLATE_HTML
 
-                if item.url.startswith("/"):
-                    item.url = self.root + item.url
+                # TODO - How do we get header once/check if user header has been downloaded
+                # 1. Get the header for the page if requested
 
-                if item.original_filename:
-                    item.extension = item.original_filename.split(".")[-1]
-                    item.filename = ".".join(item.original_filename.split(".")[:-1])
+                # 2. Create Post-Body
+                if not (post_body := self.get_post_body(post_html, post_data.post_id)):
+                    self.log.warning("Post is locked")
 
-                # Download the normal image and link
-                yield Message.Url, item.url, item.model_dump()
-                try:
-                    # Attempt to get the previews if the files are too large or they are requested
-                    if (
-                        self.config("previews")
-                        or os.path.getsize(item_dict["_gdl_path"].path) / 1024 / 1024
-                        > 4
-                    ):
-                        # TODO fix this up so less copying
-                        item.type = "preview"
-                        item_dict = asdict(item)
-                        yield Message.Url, item.gallery_preview_url, item_dict
-                        item.type = "image"
-                        item.filename = item["_gdl_path"].filename
-
-                except FileNotFoundError:
-                    pass
-
-                if isinstance(item, GalleryItem):
-                    images.append(
-                        {
-                            "id": item.id,
-                            "filename": item.filename,
-                            "width": item.width,
-                            "height": item.height,
-                            "type": item.width,
-                        }
-                    )
-
-            if self.config("posts", "html") != "html":
-                yield self._commit_journal_text(post_data)
-            else:
-                # 1. Get Post Header
-                # TODO - Make this not a separate call if necessary
-                post_header = self._get_profile_header(post_data)
-
-                # 2 Handle Post-Body
-                body_parts = post_html.find_all(
-                    "div", class_=["post-body", "post_tags", "post-actions"]
-                )
-                post_body = self.soup.new_tag("div", attrs={"class": "section-body"})
-                for body_part in body_parts:
-                    if body_part.get("class") == ["post-actions"]:
-                        comment_container = body_part.find(
-                            "div", attrs={"data-role": "post-comments_list"}
-                        )
-                        post_comments = self._get_post_comments(
-                            post_data.get("post_id")
-                        )
-                        comment_container.append(post_comments)
-                    post_body.append(body_part)
-
-                # 3 Build Post
                 post_elements = {
-                    "post_header": post_header,
+                    "author_element": author_element,
                     "post_body": post_body if not None else post_html,
-                    "var_filename": var_filename,
                 }
-                post, post_data = self._build_post_html(post_data, post_elements)
+                post: BeautifulSoup
+                post, post_data = self.build_post_html(
+                    post_data, post_elements, post_template
+                )
 
-                # 4. Re-Link Avatars
-                # TODO - Extra Avatar Work
-                yield from self._relink_avatars(post, item if item else post_data)
+                # 3. Get Avatars from Post Body
+                avatars = yield from self.handle_avatars_covers(post, post_data)
+
+                # 4. Get Gallery Media
+                media = self._media_from_post(post, post_data)
+                images = yield from self.get_gallery_media(media)
 
                 # 5 Update Gallery to local values
-                if data_gallery := post.find("div", {"class": "uploads-images"}):
-                    data_gallery["data-gallery"] = util.json_dumps(media)
+                if gallery := post.find("div", {"class": "uploads-images"}):
+                    gallery["data-gallery"] = ""
 
-                # 6. Re-Link all hrefs back to the website
+                # 6. Remove all links
+                for link in post.select("[src^='http']"):
+                    link.src = ""
+
+                # 6. Re-Link all local references back to the website
                 for link in post.find_all("a"):
-                    link["href"] = self.root + link["href"]
+                    if link["href"].startswith("/"):
+                        if self.post_config.get("relink"):
+                            link["href"] = self.root + link["href"]
+                        else:
+                            link["href"] = None
 
-                # 7. Commit Vars
-                post_data["extension"] = "js"
-                post_data["type"] = "post"
-                yield Message.Directory, "", post_data
-                avatar_path = pathlib.Path(post_data["_gdl_path"].directory)
-                # Path('/usr/var/log').relative_to('/usr/var/log/')
-                var_file = HTML_VAR_TEMPLATE.format(
-                    post_id=post_data["post_id"],
-                    avatar_path="../Avatars/",
-                    cover_path="./Header/",
-                    image_path=f"../Pictures/{post_data['post_id']}/",
-                    preview_path=f"../Pictures/{post_data['post_id']}/Previews/",
-                    images=util.json_dumps(images),
+                # 7. Create Vars File
+                yield from self.build_html_vars_file(
+                    post, post_data, images=images, avatars=avatars
                 )
-                post_data["extension"] = "js"
-                post_data["type"] = "post"
-                yield Message.Url, var_file, post_data
-                var_filename = post_data["_gdl_path"].filename
 
                 # 7. Commit Post
+                post_data = post_data.model_dump()
                 post_data["extension"] = "html"
                 post_data["type"] = "post"
                 post_string = f"text:{str(post)}"
                 yield Message.Url, post_string, post_data
+            elif self.post_config.get("style") == "text":
+                yield self._commit_journal_text(post_data)
 
-    @abstractmethod
     def posts(self) -> Generator[Tag, None, None]:
         """Yield HTML content of all relevant posts"""
 
@@ -293,20 +250,21 @@ class SubscribeStarExtractor(Extractor):
             "X-Requested-With": "XMLHttpRequest",
         }
 
-        def check_errors(response):
-            if errors := response.json().get("errors"):
+        def check_errors(_response):
+            errors: dict
+            if errors := _response.json().get("errors"):
                 self.log.debug(errors)
                 try:
                     msg = f'"{errors.popitem()[1]}"'
-                except Exception:
+                except (AttributeError, IndexError):
                     msg = None
                 raise exception.AuthenticationError(msg)
-            return response
+            return _response
 
         # submit username / email
         url = self.root + "/session.json"
         data = {"email": username}
-        response = check_errors(
+        check_errors(
             self.request(url, method="POST", headers=headers, data=data, fatal=False)
         )
 
@@ -320,8 +278,138 @@ class SubscribeStarExtractor(Extractor):
         # return cookies
         return {cookie.name: cookie.value for cookie in response.cookies}
 
-    def _media_from_post(
+    def handle_avatars_covers(
         self, post: Tag, post_data: PostData
+    ) -> Generator[tuple[int, str, Any], Any, dict[Any, Any]]:
+        avatars = {}
+        supported_types = ["avatar", "cover"]
+        for element in post.find_all(
+            "img",
+            {
+                "data-type": supported_types,
+                "src": True,
+            },
+        ):
+            user_id = element.get("data-user-id")
+            el_type = element.get("data-type")
+            key = f"{user_id}_{el_type}"
+
+            if not (username := element.get("alt")):
+                if name_element := element.find_next(
+                    "div",
+                    class_=["profile_main_info-name", "post-user", "comments-author"],
+                ):
+                    username = name_element.text
+                else:
+                    username = None
+
+            if avatars.get(key) is None and el_type in supported_types:
+                if self.post_config.get("avatars") or (
+                    self.post_config.get("cover") and el_type == "cover"
+                ):
+                    avatar = AvatarItem(
+                        **post_data.model_dump(),
+                        user_id=int(user_id),
+                        username=username,
+                        type=el_type,
+                        extension=text.ext_from_url(element["src"]),
+                        url=element["src"],
+                    )
+
+                    avatar_data = avatar.model_dump()
+                    yield Message.Url, avatar.url, avatar_data
+                    avatar_item = {
+                        "userId": int(user_id),
+                        "username": username,
+                        "filename": avatar_data["_gdl_path"].filename,
+                        "type": el_type,
+                    }
+                else:
+                    yield 0, "", None
+                    avatar_item = None
+
+                avatars[key] = avatar_item
+
+            # Always set a source to nothing to make it offline
+            element["src"] = ""
+
+        return avatars
+
+    def get_post_body(self, post: Tag, post_id: int) -> bool | Tag:
+        post_body = self.soup.new_tag("div", attrs={"class": "section-body"})
+        if body := post.find("div", class_="post-body"):
+            post_body.append(body)
+            return False
+        if collections := post.find("div", class_="collection_labels"):
+            # TODO - see about getting collection links
+            collections.find("img")["src"] = ""
+            post_body.append(collections)
+        if tags := post.find("div", class_=["tags", "post_tags"]):
+            post_body.append(tags)
+
+        # TODO - Validate if we have to do this everytime or not
+        # TODO - Also validate what happens if there are a lot of comments
+        if self.post_config.get("comments"):
+            actions = post.find("div", class_="post-actions")
+            container = actions.find("div", attrs={"data-role": "post-comments_list"})
+            comments = self._get_post_comments(post_id)
+            container.append(comments)
+            post_body.append(actions)
+
+        return post_body
+
+    def get_gallery_media(self, media: list[GalleryItem]):
+        images = []
+        for num, item in enumerate(media, 1):
+            item.num = num
+
+            if item.url.startswith("/"):
+                item.url = self.root + item.url
+
+            if item.original_filename:
+                item.extension = item.original_filename.split(".")[-1]
+                item.name = ".".join(item.original_filename.split(".")[:-1])
+
+            # Download the normal image and link
+            item_data = item.model_dump()
+            yield Message.Url, item.url, item_data
+            if isinstance(item, GalleryItem):
+                images.append(
+                    {
+                        "id": item.id,
+                        "filename": item_data["_gdl_path"].filename,
+                        "created_at": item.date,
+                        "width": item.width,
+                        "height": item.height,
+                        "type": item.type,
+                    }
+                )
+
+            try:
+                # Attempt to get the previews if the files are too large, or they are requested
+                file_size = os.path.getsize(item_data["_gdl_path"].path) / 1024 / 1024
+                file_limit = self.post_config.get("previews", False)
+                if file_limit is not False and file_size > file_limit:
+                    item.type = "preview"
+                    yield Message.Url, item.gallery_preview_url, item.model_dump()
+
+            except FileNotFoundError:
+                pass  # If we don't download the main image, then we skip the preview
+        return images
+
+    @cache()
+    def get_post_sidebar(self, post_id: int):
+        if sidebar := self.soup.find("div", class_="for-single_post_sidebar"):
+            return sidebar
+        else:
+            response = self.request(self.root + f"/{post_id}").text
+            page = BeautifulSoup(response, "html.parser")
+            sidebar = page.find("div", class_="for-single_post_sidebar")
+            return sidebar
+
+    @staticmethod
+    def _media_from_post(
+        post: Tag, post_data: PostData
     ) -> list[GalleryItem | AvatarItem]:
         media = {}
         if gallery := post.find("div", {"class": "uploads-images"}):
@@ -350,132 +438,83 @@ class SubscribeStarExtractor(Extractor):
             post, 'class="uploads-audios"', 'class="post-edit_form"'
         ):
             for audio in util.re(r'class="audio_preview-data[" ]').split(audios)[1:]:
-                media.append(
-                    {
-                        "id": text.parse_int(text.extr(audio, 'data-upload-id="', '"')),
-                        "name": text.unescape(
-                            text.extr(audio, 'audio_preview-title">', "<")
-                        ),
-                        "url": text.unescape(text.extr(audio, 'src="', '"')),
-                        "type": "audio",
-                    }
-                )
-
-        # Avatar and Cover Page
-        if self.config("avatars"):
-            for element in post.find_all(
-                "img",
-                {
-                    "data-type": ["avatar", "cover"],
-                    "src": True,
-                },
-            ):
-                user_id = element["data-user-id"]
-                el_type = element["data-type"]
-
-                if avatar := media.get(el_type + user_id):
-                    continue
-                else:
-                    avatar = AvatarItem(
-                        **post_data.model_dump(),
-                        user_id=int(user_id),
-                        type=el_type,
-                        extension=text.ext_from_url(element["src"]),
-                        url=element["src"],
-                    )
-                    media[el_type + user_id] = avatar
+                media[audio["id"]] = {
+                    "id": text.parse_int(text.extr(audio, 'data-upload-id="', '"')),
+                    "name": text.unescape(
+                        text.extr(audio, 'audio_preview-title">', "<")
+                    ),
+                    "url": text.unescape(text.extr(audio, 'src="', '"')),
+                    "type": "audio",
+                }
 
         return list(media.values())
-        # audios = html.find('div', {"class": ["uploads-audios", "post-edit_form"] })
-        # # audios = text.extr(
-        # #     html, 'class="uploads-audios"', 'class="post-edit_form"')
-        # if audios:
-        #     for audio in re.split(
-        #             r'class="audio_preview-data[" ]', audios)[1:]:
-        #         media.append({
-        #             "id"  : text.parse_int(text.extr(
-        #                 audio, 'data-upload-id="', '"')),
-        #             "name": text.unescape(text.extr(
-        #                 audio, 'audio_preview-title">', '<')),
-        #             "url" : text.unescape(text.extr(audio, 'src="', '"')),
-        #             "type": "audio",
-        #         })
-        return list(media.values())
 
-    def _data_from_post(self, html) -> PostData:
-        author_bio = html.find(
-            "div", ["star_link-types", "profile_main_info-description"]
-        )
-        # author_name = html.find(
-        #     ["a", "div"], ["profile_main_info-name", "star_link-name", "post-user"]
-        # ).text.strip()
-        # author_id = html.find(
-        #     ["a", "div"], ["star_link-avatar", "post-avatar"]
-        # ).next.get("data-user-id")
+    def _data_from_post(self, html: Tag) -> PostData:
+        if author_bio := html.find(
+            "div", class_=["star_link-types", "profile_main_info-description"]
+        ):
+            author_bio = author_bio.text.strip()
+        elif author_bio := self.soup.find(
+            "div", class_="profile_main_info-description"
+        ):
+            author_bio = author_bio.text.strip()
+        else:
+            author_bio = ""
 
-        # post_date = html.find(["div"], ["section-title_date", "post-date"]).text.strip()
-        post_title = html.select("div.post-title") if None else html.find("h1")
+        title_element = html.find("div", class_=["trix-content", "post-title"])
+        if post_title := title_element.find(["h1", "h2", "h3"]):
+            post_title = post_title.text.strip()
+        else:
+            post_title = ""
+
         tags = []
-        if tag_element := html.find(["div"], ["post_tags"]):
+        if tag_element := html.find("div", class_="post_tags"):
             for tag in tag_element.findChildren("a", recursive=False):
                 tags.append(tag.text)
-        if _post_id := html.find("[data-post_id]"):
-            post_id = _post_id[0]["data-post_id"]
+
+        if "post" in html.get("class") and html.get("data-id"):
+            post_id = html["data-id"]
+        elif post_container := html.find(
+            "div", {"class": "section-body", "data-id": True}
+        ):
+            post_id = post_container["data-id"]
         else:
             post_id = None
 
+        if raw_date := html.find(["div"], class_=["section-title_date", "post-date"]):
+            date = self._parse_datetime(raw_date.text.strip())
+        else:
+            date = None
+
+        if collection := html.find("div", class_="collection_label for-post"):
+            link = collection.find("a", attrs={"href": True})["href"]
+            collection_id = link.split("/")[-1]
+            collection_name = collection.find(
+                "span", class_="collection_label-title"
+            ).text.strip()
+        else:
+            collection_id = None
+            collection_name = None
+
         return PostData(
-            author_bio=author_bio.text.strip() if author_bio else "",
-            author_name=html.find(
-                ["a", "div"], ["profile_main_info-name", "star_link-name", "post-user"]
+            author=html.find(
+                ["a", "div"],
+                class_=[
+                    "star_link-name",
+                    "post-user for-profile_wall",
+                ],
             ).text.strip(),
+            author_bio=author_bio,
             author_id=html.find(
-                ["a", "div"], ["star_link-avatar", "post-avatar"]
+                ["a", "div"], class_=["star_link-avatar", "post-avatar"]
             ).next.get("data-user-id"),
-            post_date=html.find(
-                ["div"], ["section-title_date", "post-date"]
-            ).text.strip(),
-            post_title=post_title.text.strip() if post_title else "",
+            collection_id=collection_id,
+            collection_name=collection_name,
+            date=date,
+            title=post_title,
             post_id=post_id,
             tags=tags,
         )
-        # return {
-        #     "post_id": post_id,
-        #     "post_title": post_title.text.strip() if post_title else "",
-        #     "author_id": author_id,
-        #     "author_name": author_name,
-        #     "author_bio": author_bio.text.strip() if author_bio else "",
-        #     "date": self._parse_datetime(post_date),
-        #     "tags": tags,
-        # }
-
-    def _relink_avatars(
-        self, post, post_data
-    ) -> Generator[tuple[int, Any, Any], Any, None]:
-        avatars = {}
-        for element in post.find_all(
-            "img",
-            {
-                "data-type": ["avatar", "cover"],
-                "src": True,
-            },
-        ):
-            user_id = element["data-user-id"]
-            el_type = element["data-type"]
-            if avatar := avatars.get(user_id):
-                # Just update the avatar with known info
-                element["src"][el_type] = avatar
-            else:
-                avatar_data = post_data.copy()
-                avatar_data["type"] = el_type
-                avatar_data["url"] = element["src"]
-                avatar_data["extension"] = text.ext_from_url(element["src"])
-                avatar_data["filename"] = f"{el_type}_{user_id}"
-                avatar_data["id"] = user_id
-                yield Message.Url, element["src"], avatar_data
-                element["src"] = avatars.get(user_id, {})[el_type] = (
-                    f"{{{{{el_type}_path}}}}/{avatar_data['_gdl_path'].filename}"
-                )
 
     def _parse_datetime(self, dt):
         if dt.startswith("Updated on "):
@@ -508,21 +547,74 @@ class SubscribeStarExtractor(Extractor):
         post["extension"] = "txt"
         return Message.Url, txt, post
 
-    def _build_post_html(self, post_data, post_elements):
+    def build_post_html(
+        self, post_data: PostData, post_elements: dict[str, Tag], template: str
+    ):
         if not post_elements["post_body"]:
             self.log.warning("%s: Empty post content", post_data["index"])
             return None
         else:
-            html_string = JOURNAL_TEMPLATE_HTML.format(
+            html_string = template.format(
                 post_body=post_elements["post_body"],
-                post_date=post_data["date"],
-                profile_header=post_elements["post_header"],
-                post_title=post_data["post_title"],
-                post_id=post_data["post_id"],
-                var_filename=post_elements["var_filename"],
+                post_date=post_data.date,
+                author=post_elements["author_element"] or "",
+                post_title=post_data.title,
+                post_id=post_data.post_id,
             )
             html = BeautifulSoup(html_string, "html.parser")
             return html, post_data
+
+    def build_html_vars_file(
+        self,
+        post: Tag,
+        post_data: PostData,
+        images: list[GalleryItem],
+        avatars: dict[str, str],
+    ):
+        data = post_data.model_dump()
+
+        # Get Relative Paths
+        data["type"] = "avatar"
+        data["extension"] = "png"
+        yield Message.Directory, "", data
+        avatar_path = Path(data["_gdl_path"].directory)
+
+        data["type"] = "cover"
+        yield Message.Directory, "", data
+        cover_path = Path(data["_gdl_path"].directory)
+
+        data["type"] = "image"
+        yield Message.Directory, "", data
+        image_path = Path(data["_gdl_path"].directory)
+
+        _preview: bool | int = self.post_config.get("previews")
+        if _preview is not False:
+            data["type"] = "preview"
+            yield Message.Directory, "", data
+            preview_path = Path(data["_gdl_path"].directory)
+        else:
+            preview_path = image_path
+
+        data["extension"] = "js"
+        data["type"] = "post"
+        yield Message.Directory, "", data
+        file_path = Path(data["_gdl_path"].directory)
+
+        var_file = HTML_VAR_TEMPLATE.format(
+            post_id=post_data.post_id,
+            avatar_path=avatar_path.relative_to(file_path, walk_up=True),
+            cover_path=cover_path.relative_to(file_path, walk_up=True),
+            image_path=image_path.relative_to(file_path, walk_up=True),
+            preview_path=preview_path.relative_to(file_path, walk_up=True),
+            images=util.json_dumps(images),
+            avatars=util.json_dumps(avatars),
+        )
+        yield Message.Url, var_file, data
+
+        vars_container = post.find("script", class_="post_vars")
+        vars_container["src"] = f"./{data['_gdl_path'].filename}"
+
+        return data["_gdl_path"].filename
 
     def _get_post_comments(self, post_id):
         api = self.root + f"/posts/{post_id}/comments.json"
@@ -535,19 +627,23 @@ class SubscribeStarExtractor(Extractor):
             return None
 
     @cache()
-    def _get_profile_header(self, post_data):
-        # TODO - Handle Getting this from a single post
-        response = self.request(self.root + f"/{post_data['author_name']}").text
-        page = BeautifulSoup(response, "html.parser")
-        header = page.find("div", class_="profile_main_info")
-        return header
+    def _get_profile_header(self, author: str):
+        if header := self.soup.find("div", class_="profile_main_info"):
+            return header
+        else:
+            response = self.request(self.root + f"/{author}").text
+            page = BeautifulSoup(response, "html.parser")
+            header = page.find("div", class_="profile_main_info")
+            return header
 
 
 class SubscribeStarUserExtractor(SubscribeStarExtractor):
     """Extractor for media from a subscribestar user"""
 
     subcategory = "user"
-    pattern = BASE_PATTERN + r"/(?!posts/)([^/?#]+)(\?tag=[\w]+)?"
+    pattern = (
+        BASE_PATTERN + r"/(?!posts|collections)(?P<user>[^/?#]+)(\?tag=[\w]+)?(?:$|/$)"
+    )
     example = "https://www.subscribestar.com/USER/tag=TAGNAME"
 
     def posts(self) -> Generator[Tag, None, None]:
@@ -564,6 +660,55 @@ class SubscribeStarUserExtractor(SubscribeStarExtractor):
                 page = self.request(self.root + text.unescape(url["href"])).json()[
                     "html"
                 ]
+            else:
+                break
+
+
+class SubscribeStarCollectionsExtractor(SubscribeStarExtractor):
+    """Extractor for media from a subscribestar user"""
+
+    subcategory = "user"
+    pattern = (
+        BASE_PATTERN + r"/(?!posts)(?P<user>[^/?#]+)/collections/?"
+        r"(?P<collection_id>\d+)?"
+    )
+    example = "https://www.subscribestar.com/USER/tag=TAGNAME"
+
+    def __init__(self, match):
+        super().__init__(match)
+        self.collection_id: int = match.groupdict().get("collection_id")
+        self.username: str = match.group("user")
+
+    def posts(self) -> Generator[Tag, None, None]:
+        self.log.error("Not Supported")
+        return
+        if self.collection_id is None:
+            # Get Collection IDs
+            page = self.request(self.url).text
+            self.soup = BeautifulSoup(page, "html.parser")
+            elements = self.soup.find_all("div", class_="post_collection")
+            collection_ids = [
+                int(element["data-collection-id"]) for element in elements
+            ]
+        else:
+            collection_ids = [self.collection_id]
+
+        for collection_id in collection_ids:
+            url = f"{self.root}/{self.username}/collections/{collection_id}"
+            page = self.request(url).text
+            while True:
+                self.soup = BeautifulSoup(page, "html.parser")
+                if posts := self.soup.find_all("div", class_="collection_post"):
+                    yield from posts
+
+                    url = self.soup.find("div", {"class": "posts-more"})
+                    if not url:
+                        return
+                    page = self.request(self.root + text.unescape(url["href"])).json()[
+                        "html"
+                    ]
+                else:
+                    break
 
 
 class SubscribeStarPostExtractor(SubscribeStarExtractor):
@@ -573,11 +718,15 @@ class SubscribeStarPostExtractor(SubscribeStarExtractor):
     pattern = BASE_PATTERN + r"/posts/(?P<post_id>\d+)"
     example = "https://www.subscribestar.com/posts/12345"
 
+    def __init__(self, match):
+        super().__init__(match)
+        self.post_id = match.group("post_id")
+
     def posts(self) -> ResultSet[Tag]:
         response = self.request(self.url)
         self.soup = BeautifulSoup(response.text, "html.parser")
 
-        return self.soup.select("div.post.wrapper")
+        return self.soup.find_all("div", class_=["post", "wrapper"])
 
 
 # region Templates
@@ -587,7 +736,7 @@ by {username}, {date}
 {content}
 """
 
-JOURNAL_TEMPLATE_HTML = """
+JOURNAL_HEADER_TEMPLATE_HTML = """
 <!DOCTYPE html>
 <html lang="">
 <head>
@@ -598,20 +747,15 @@ JOURNAL_TEMPLATE_HTML = """
     <link rel="stylesheet" media="screen"
           href="../../CSS/SubscribeStar.css"
           data-track-change="true"/>
-    <script>
-    </script>
+    <script class="post_vars"></script>
 </head>
 <body>
 <div class="layout for-public is-adult" data-role="popup_anchor" data-view="app#layout" id="root">
     <div class="layout-inner" data-view="app#fix_scroll">
         <div class="layout-content">
-            {profile_header}
+            {author}
             <div class="post wrapper for-profile_columns is-single is-shown" data-comments-loaded="true"
-                 data-edit-path="/posts/1817339/edit?single_post_view=true" data-id="1817339" data-role="popup_anchor"
                  data-view="app#post">
-                <div class="section-title">
-                    <div class="section-title_date">{post_date}</div>
-                </div>
                 {post_body}
             </div>
         </div>
@@ -633,10 +777,61 @@ JOURNAL_TEMPLATE_HTML = """
 
 </body>
 <script src="../../CSS/Render.js"></script>
-<script src="./{var_filename}"></script>
 <script src="../../CSS/Gallery.js"></script>
 </html>
 """
+
+JOURNAL_SIDEBAR_TEMPLATE_HTML = """
+<!DOCTYPE html>
+<html lang="">
+<head>
+    <title>{post_title}</title>
+    <meta content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+    <meta name="action-cable-url" content="/cable"/>
+    <meta content="72c35a3ce4ae8fc1d49ae85a68cb22d5" name="p:domain_verify"/>
+    <link rel="stylesheet" media="screen"
+          href="../../CSS/SubscribeStar.css"
+          data-track-change="true"/>
+    <script class="post_vars"></script>
+</head>
+<body>
+<div class="layout for-public is-adult" data-role="popup_anchor" data-view="app#layout" id="root">
+    <div class="layout-inner" data-view="app#fix_scroll">
+        <div class="layout-content">
+            <div class="post wrapper for-profile_columns is-single is-shown" data-comments-loaded="true"
+                 data-view="app#post">
+                <div class="section for-single_post">
+                    <div class="section-title">
+                        <div class="section-title_date">{post_date}</div>
+                    </div>
+                    {post_body}
+                </div>
+                {author}
+            </div>
+        </div>
+    </div>
+</div>
+<div class="layout-overlay" data-view="app#overlay">
+    <div class="overlay-bg" data-role="overlay-bg"></div>
+    <div class="overlay" data-scrollable="" data-role="overlay-wrap" tabindex="-1">
+        <div class="overlay-close" data-role="overlay-hide">
+            <div class="overlay-close_inner">
+                <div class="overlay-close_line"></div>
+                <div class="overlay-close_line"></div>
+            </div>
+        </div>
+        <div class="overlay-content" data-role="overlay-content" data-view="app#fix_scroll">
+        </div>
+    </div>
+</div>
+
+</body>
+<script src="../../CSS/Render.js"></script>
+<script src="../../CSS/Gallery.js"></script>
+</html>
+
+"""
+
 
 HTML_VAR_TEMPLATE = """text:
 let config = {{
@@ -646,6 +841,7 @@ let config = {{
     avatar_path: "{avatar_path}",
     cover_path: "{cover_path}"
 }}
+const avatars = {avatars}
 const images = {images}
 """
 
