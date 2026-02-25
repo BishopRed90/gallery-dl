@@ -56,6 +56,7 @@ class PostData(BaseModel):
     tags: list[str]
     gallery_count: int = 0
     media_count: int = 0
+    previews: bool = False
 
     # @classmethod
     # def from_instance(cls, instance, strict: bool = False, **kwargs):
@@ -159,7 +160,7 @@ class SubscribeStarExtractor(Extractor):
 
                 # 4. Get Gallery Media
                 media = self._media_from_post(post, post_data)
-                images = yield from self.get_gallery_media(media)
+                images = yield from self.get_gallery_media(media, post_data)
 
                 # 5 Update Gallery to local values
                 if gallery := post.find("div", {"class": "uploads-images"}):
@@ -359,7 +360,7 @@ class SubscribeStarExtractor(Extractor):
 
         return post_body
 
-    def get_gallery_media(self, media: list[GalleryItem]):
+    def get_gallery_media(self, media: list[GalleryItem], post_data: PostData):
         images = []
         for num, item in enumerate(media, 1):
             item.num = num
@@ -395,6 +396,7 @@ class SubscribeStarExtractor(Extractor):
                     item.type = "preview"
                     yield Message.Directory, "", item.model_dump()
                     yield Message.Url, item.gallery_preview_url, item.model_dump()
+                    post_data.previews = True
 
             except FileNotFoundError:
                 pass  # If we don't download the main image, then we skip the preview
@@ -594,7 +596,7 @@ class SubscribeStarExtractor(Extractor):
         image_path = Path(data["_gdl_path"].directory)
 
         _preview: bool | int = self.post_config.get("previews")
-        if _preview is not False:
+        if post_data.previews:
             data["type"] = "preview"
             yield Message.Directory, "", data
             preview_path = Path(data["_gdl_path"].directory)
