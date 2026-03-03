@@ -8,23 +8,24 @@
 
 """Utility functions and classes"""
 
-import os
-import sys
-import json
-import time
-import random
-import getpass
-import hashlib
 import binascii
+import collections
 import datetime
 import functools
+import getpass
+import hashlib
 import itertools
+import json
+import os
+import random
 import subprocess
-import collections
+import sys
+import time
 import urllib.parse
-from http.cookiejar import Cookie
 from email.utils import mktime_tz, parsedate_tz
-from . import text, version, exception
+from http.cookiejar import Cookie
+
+from . import exception, text, version
 
 
 def bencode(num, alphabet="0123456789"):
@@ -53,14 +54,11 @@ def decrypt_xor(encrypted, key, base64=True, fromhex=False):
         encrypted = bytes.fromhex(encrypted.decode())
 
     div = len(key)
-    return bytes([
-        encrypted[i] ^ key[i % div]
-        for i in range(len(encrypted))
-    ]).decode()
+    return bytes([encrypted[i] ^ key[i % div] for i in range(len(encrypted))]).decode()
 
 
 def advance(iterable, num):
-    """"Advance 'iterable' by 'num' steps"""
+    """ "Advance 'iterable' by 'num' steps"""
     iterator = iter(iterable)
     next(itertools.islice(iterator, num, num), None)
     return iterator
@@ -108,8 +106,10 @@ def contains(values, elements, separator=" "):
 
 def raises(cls):
     """Returns a function that raises 'cls' as exception"""
+
     def wrap(*args):
         raise cls(*args)
+
     return wrap
 
 
@@ -161,8 +161,7 @@ def format_value(value, suffixes="kMGTPEZY"):
     index = value_len - 4
     if index >= 0:
         offset = (value_len - 1) % 3 + 1
-        return (f"{value[:offset]}.{value[offset:offset+2]}"
-                f"{suffixes[index // 3]}")
+        return f"{value[:offset]}.{value[offset : offset + 2]}{suffixes[index // 3]}"
     return value
 
 
@@ -203,9 +202,9 @@ def enumerate_reversed(iterable, start=0, length=None):
         length = len(iterable)
 
     try:
-        iterable = zip(range(start-1+length, start-1, -1), reversed(iterable))
+        iterable = zip(range(start - 1 + length, start - 1, -1), reversed(iterable))
     except TypeError:
-        iterable = list(zip(range(start, start+length), iterable))
+        iterable = list(zip(range(start, start + length), iterable))
         iterable.reverse()
 
     return iterable
@@ -248,7 +247,8 @@ def to_datetime(value):
             else:
                 # convert to naive UTC
                 dt = dt.astimezone(datetime.timezone.utc).replace(
-                    microsecond=0, tzinfo=None)
+                    microsecond=0, tzinfo=None
+                )
             return dt
         except Exception:
             pass
@@ -269,7 +269,7 @@ def datetime_to_timestamp_string(dt):
         return ""
 
 
-if sys.hexversion < 0x30c0000:
+if sys.hexversion < 0x30C0000:
     # Python <= 3.11
     datetime_utcfromtimestamp = datetime.datetime.utcfromtimestamp
     datetime_utcnow = datetime.datetime.utcnow
@@ -288,6 +288,10 @@ else:
 def json_default(obj):
     if isinstance(obj, CustomNone):
         return None
+    try:
+        return obj.json()
+    except (AttributeError, TypeError):
+        pass
     return str(obj)
 
 
@@ -302,7 +306,8 @@ json_dumps = json.JSONEncoder(
 def dump_json(obj, fp=sys.stdout, ensure_ascii=True, indent=4):
     """Serialize 'obj' as JSON and write it to 'fp'"""
     json.dump(
-        obj, fp,
+        obj,
+        fp,
         ensure_ascii=ensure_ascii,
         indent=indent,
         default=json_default,
@@ -326,21 +331,19 @@ def dump_response(response, fp, headers=False, content=True, hide_auth=True):
 
             if cookie := req_headers.get("Cookie"):
                 req_headers["Cookie"] = ";".join(
-                    c.partition("=")[0] + "=***"
-                    for c in cookie.split(";")
+                    c.partition("=")[0] + "=***" for c in cookie.split(";")
                 )
 
             if set_cookie := res_headers.get("Set-Cookie"):
                 res_headers["Set-Cookie"] = re(r"(^|, )([^ =]+)=[^,;]*").sub(
-                    r"\1\2=***", set_cookie)
+                    r"\1\2=***", set_cookie
+                )
 
         request_headers = "\n".join(
-            f"{name}: {value}"
-            for name, value in req_headers.items()
+            f"{name}: {value}" for name, value in req_headers.items()
         )
         response_headers = "\n".join(
-            f"{name}: {value}"
-            for name, value in res_headers.items()
+            f"{name}: {value}" for name, value in res_headers.items()
         )
 
         output = f"""\
@@ -404,8 +407,10 @@ def detect_challenge(response):
             return "Cloudflare CAPTCHA"
 
     elif server.startswith("ddos-guard"):
-        if response.status_code == 403 and \
-                b"/ddos-guard/js-challenge/" in response.content:
+        if (
+            response.status_code == 403
+            and b"/ddos-guard/js-challenge/" in response.content
+        ):
             return "DDoS-Guard challenge"
 
 
@@ -462,7 +467,6 @@ def cookiestxt_load(fp):
     cookies = []
 
     for line in fp:
-
         line = line.lstrip(" ")
         # strip '#HttpOnly_'
         if line.startswith("#HttpOnly_"):
@@ -474,24 +478,32 @@ def cookiestxt_load(fp):
         if line[-1] == "\n":
             line = line[:-1]
 
-        domain, domain_specified, path, secure, expires, name, value = \
-            line.split("\t")
+        domain, domain_specified, path, secure, expires, name, value = line.split("\t")
 
         if not name:
             name = value
             value = None
 
-        cookies.append(Cookie(
-            0, name, value,
-            None, False,
-            domain,
-            domain_specified == "TRUE",
-            domain[0] == "." if domain else False,
-            path, False,
-            secure == "TRUE",
-            None if expires == "0" or not expires else expires,
-            False, None, None, {},
-        ))
+        cookies.append(
+            Cookie(
+                0,
+                name,
+                value,
+                None,
+                False,
+                domain,
+                domain_specified == "TRUE",
+                domain[0] == "." if domain else False,
+                path,
+                False,
+                secure == "TRUE",
+                None if expires == "0" or not expires else expires,
+                False,
+                None,
+                None,
+                {},
+            )
+        )
 
     return cookies
 
@@ -579,19 +591,20 @@ CODES = {
 }
 
 
-class HTTPBasicAuth():
+class HTTPBasicAuth:
     __slots__ = ("authorization",)
 
     def __init__(self, username, password):
         self.authorization = b"Basic " + binascii.b2a_base64(
-            f"{username}:{password}".encode("latin1"), newline=False)
+            f"{username}:{password}".encode("latin1"), newline=False
+        )
 
     def __call__(self, request):
         request.headers["Authorization"] = self.authorization
         return request
 
 
-class ModuleProxy():
+class ModuleProxy:
     __slots__ = ()
 
     def __getitem__(self, key, modules=sys.modules):
@@ -609,14 +622,14 @@ class ModuleProxy():
     __getattr__ = __getitem__
 
 
-class LazyPrompt():
+class LazyPrompt:
     __slots__ = ()
 
     def __str__(self):
         return getpass.getpass()
 
 
-class NullContext():
+class NullContext:
     __slots__ = ()
 
     def __enter__(self):
@@ -626,7 +639,7 @@ class NullContext():
         pass
 
 
-class NullResponse():
+class NullResponse:
     __slots__ = ("url", "reason")
 
     ok = is_redirect = is_permanent_redirect = False
@@ -654,8 +667,9 @@ class NullResponse():
         return {}
 
 
-class CustomNone():
+class CustomNone:
     """None-style type that supports more operations than regular None"""
+
     __slots__ = ()
 
     __getattribute__ = identity
@@ -729,8 +743,7 @@ class CustomNone():
     __repr__ = __str__
 
 
-class Flags():
-
+class Flags:
     def __init__(self):
         self.FILE = self.POST = self.CHILD = self.DOWNLOAD = None
 
@@ -765,39 +778,55 @@ NONE = CustomNone()
 FLAGS = Flags()
 EPOCH = datetime.datetime(1970, 1, 1)
 SECOND = datetime.timedelta(0, 1)
-WINDOWS = (os.name == "nt")
+WINDOWS = os.name == "nt"
 SENTINEL = object()
 EXECUTABLE = getattr(sys, "frozen", False)
 SPECIAL_EXTRACTORS = {"oauth", "recursive", "generic"}
 
-EXTS_IMAGE = {"jpg", "jpeg", "png", "gif", "bmp", "svg", "psd", "ico",
-              "webp", "avif", "heic", "heif"}
+EXTS_IMAGE = {
+    "jpg",
+    "jpeg",
+    "png",
+    "gif",
+    "bmp",
+    "svg",
+    "psd",
+    "ico",
+    "webp",
+    "avif",
+    "heic",
+    "heif",
+}
 EXTS_VIDEO = {"mp4", "m4v", "mov", "webm", "mkv", "ogv", "flv", "avi", "wmv"}
 EXTS_ARCHIVE = {"zip", "rar", "7z", "tar", "gz", "bz2", "lzma", "xz"}
 
 USERAGENT = "gallery-dl/" + version.__version__
-USERAGENT_FIREFOX = (f"Mozilla/5.0 (Windows NT 10.0; Win64; x64; "
-                     f"rv:{_ff_ver}.0) Gecko/20100101 Firefox/{_ff_ver}.0")
-USERAGENT_CHROME = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    f"Chrome/{_ff_ver - 2}.0.0.0 Safari/537.36")
+USERAGENT_FIREFOX = (
+    f"Mozilla/5.0 (Windows NT 10.0; Win64; x64; "
+    f"rv:{_ff_ver}.0) Gecko/20100101 Firefox/{_ff_ver}.0"
+)
+USERAGENT_CHROME = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    f"Chrome/{_ff_ver - 2}.0.0.0 Safari/537.36"
+)
 
 GLOBALS = {
-    "contains" : contains,
+    "contains": contains,
     "parse_int": text.parse_int,
-    "urlsplit" : urllib.parse.urlsplit,
-    "datetime" : datetime.datetime,
+    "urlsplit": urllib.parse.urlsplit,
+    "datetime": datetime.datetime,
     "timedelta": datetime.timedelta,
-    "abort"    : raises(exception.StopExtraction),
-    "error"    : raises(exception.AbortExtraction),
+    "abort": raises(exception.StopExtraction),
+    "error": raises(exception.AbortExtraction),
     "terminate": raises(exception.TerminateExtraction),
-    "restart"  : raises(exception.RestartExtraction),
+    "restart": raises(exception.RestartExtraction),
     "hash_sha1": sha1,
-    "hash_md5" : md5,
-    "std"      : ModuleProxy(),
-    "re"       : text.re_module,
-    "exts_image"  : EXTS_IMAGE,
-    "exts_video"  : EXTS_VIDEO,
+    "hash_md5": md5,
+    "std": ModuleProxy(),
+    "re": text.re_module,
+    "exts_image": EXTS_IMAGE,
+    "exts_video": EXTS_VIDEO,
     "exts_archive": EXTS_ARCHIVE,
 }
 
@@ -843,7 +872,8 @@ def compile_expression_defaultdict(expr, name="<expr>", globals=None):
     else:
         # pypy3 - insert __builtins__ symbols into globals dict
         GLOBALS_DEFAULT = collections.defaultdict(
-            lambda n=NONE: n, __builtins__.__dict__)
+            lambda n=NONE: n, __builtins__.__dict__
+        )
         GLOBALS_DEFAULT.update(GLOBALS)
 
     global compile_expression_defaultdict
@@ -943,7 +973,7 @@ def build_extractor_filter(categories, negate=True, special=None):
 
     catset = set()  # set of categories / basecategories
     subset = set()  # set of subcategories
-    catsub = []     # list of category-subcategory pairs
+    catsub = []  # list of category-subcategory pairs
 
     for item in categories:
         category, _, subcategory = item.partition(":")
@@ -964,27 +994,30 @@ def build_extractor_filter(categories, negate=True, special=None):
 
     if negate:
         if catset:
-            tests.append(lambda extr:
-                         extr.category not in catset and
-                         extr.basecategory not in catset)
+            tests.append(
+                lambda extr: extr.category not in catset
+                and extr.basecategory not in catset
+            )
         if subset:
             tests.append(lambda extr: extr.subcategory not in subset)
     else:
         if catset:
-            tests.append(lambda extr:
-                         extr.category in catset or
-                         extr.basecategory in catset)
+            tests.append(
+                lambda extr: extr.category in catset or extr.basecategory in catset
+            )
         if subset:
             tests.append(lambda extr: extr.subcategory in subset)
 
     if catsub:
+
         def test(extr):
             for category, subcategory in catsub:
                 if subcategory == extr.subcategory and (
-                        category == extr.category or
-                        category == extr.basecategory):
+                    category == extr.category or category == extr.basecategory
+                ):
                     return not negate
             return negate
+
         tests.append(test)
 
     if len(tests) == 1:
@@ -1035,7 +1068,7 @@ def chain_predicates(predicates, url, kwdict):
     return True
 
 
-class RangePredicate():
+class RangePredicate:
     """Predicate; True if the current index is in the given range(s)"""
 
     def __init__(self, rangespec):
@@ -1082,28 +1115,33 @@ class RangePredicate():
             elif ":" in group:
                 start, _, stop = group.partition(":")
                 stop, _, step = stop.partition(":")
-                ranges.append(range(
-                    int(start) if start.strip() else 1,
-                    int(stop) if stop.strip() else sys.maxsize,
-                    int(step) if step.strip() else 1,
-                ))
+                ranges.append(
+                    range(
+                        int(start) if start.strip() else 1,
+                        int(stop) if stop.strip() else sys.maxsize,
+                        int(step) if step.strip() else 1,
+                    )
+                )
 
             elif "-" in group:
                 start, _, stop = group.partition("-")
-                ranges.append(range(
-                    int(start) if start.strip() else 1,
-                    int(stop) + 1 if stop.strip() else sys.maxsize,
-                ))
+                ranges.append(
+                    range(
+                        int(start) if start.strip() else 1,
+                        int(stop) + 1 if stop.strip() else sys.maxsize,
+                    )
+                )
 
             else:
                 start = int(group)
-                ranges.append(range(start, start+1))
+                ranges.append(range(start, start + 1))
 
         return ranges
 
 
-class UniquePredicate():
+class UniquePredicate:
     """Predicate; True if given URL has not been encountered before"""
+
     def __init__(self):
         self.urls = set()
 
@@ -1116,7 +1154,7 @@ class UniquePredicate():
         return False
 
 
-class FilterPredicate():
+class FilterPredicate:
     """Predicate; True if evaluating the given expression returns True"""
 
     def __init__(self, expr, target="image"):

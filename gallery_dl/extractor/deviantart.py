@@ -220,8 +220,10 @@ class DeviantartExtractor(Extractor, ABC):
             preview_rules = [
                 (
                     deviation.premium_content
-                    and deviation.premium_content.purchased
-                    and self.config("previews")
+                    and (
+                        deviation.premium_content.purchased
+                        or self.config("previews", False)
+                    )
                 ),
                 (
                     deviation.premium_content
