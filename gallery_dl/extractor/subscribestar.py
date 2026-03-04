@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Generator, Literal
 
 from bs4 import BeautifulSoup, ResultSet, Tag
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .. import exception, text, util
 from ..cache import cache
@@ -29,7 +29,7 @@ BASE_PATTERN = r"(?:https?://)?(?:www\.)?subscribestar\.(?P<tld>com|adult)"
 
 class MediaItem(BaseModel):
     url: str
-    type: Literal["image", "avatar", "cover", "preview"]
+    type: Literal["image", "avatar", "cover", "preview", "video", "audio"]
     extension: str | None = None
     name: str | None = None
 
@@ -50,9 +50,10 @@ class PostData(BaseModel):
     author_id: str
     collection_name: str | None = None
     collection_id: int | None = None
+    content: str | None = None
     date: datetime.datetime
     post_id: int | None
-    title: str
+    title: str | None
     tags: list[str]
     gallery_count: int = 0
     media_count: int = 0
@@ -86,10 +87,11 @@ class AvatarItem(MediaItem, PostData):
 class GalleryItem(PostData, MediaItem):
     id: int
     original_filename: str
+    content_type: str | None = None
     created_at: str
-    gallery_preview_url: str
-    width: str
-    height: str
+    gallery_preview_url: str = Field(alias="preview_url")
+    width: str | int
+    height: str | int
     num: int = 1
 
 
@@ -374,19 +376,20 @@ class SubscribeStarExtractor(Extractor):
 
             # Download the normal image and link
             item_data = item.model_dump()
-            yield Message.Directory, "", item.model_dump()
+            yield Message.Directory, "", item_data
             yield Message.Url, item.url, item_data
             if isinstance(item, GalleryItem):
-                images.append(
-                    {
-                        "id": item.id,
-                        "filename": item_data["_gdl_path"].filename,
-                        "created_at": item.date,
-                        "width": item.width,
-                        "height": item.height,
-                        "type": item.type,
-                    }
-                )
+                image = {
+                    "id": item.id,
+                    "filename": item_data["_gdl_path"].filename,
+                    "content_type": item.content_type,
+                    "created_at": item.date,
+                    "width": item.width,
+                    "height": item.height,
+                    "type": item.type,
+                }
+            else:
+                image = None
 
             try:
                 # Attempt to get the previews if the files are too large, or they are requested
@@ -394,12 +397,19 @@ class SubscribeStarExtractor(Extractor):
                 file_limit = self.post_config.get("previews", False)
                 if file_limit is not False and file_size > file_limit:
                     item.type = "preview"
+                    preview_data = item.model_dump()
                     yield Message.Directory, "", item.model_dump()
-                    yield Message.Url, item.gallery_preview_url, item.model_dump()
+                    yield Message.Url, item.gallery_preview_url, preview_data
+
                     post_data.previews = True
+                    image["preview"] = preview_data["_gdl_path"].filename
+                    image["preview_path"] = preview_data["_gdl_path"].directory
 
             except FileNotFoundError:
                 pass  # If we don't download the main image, then we skip the preview
+
+            if image:
+                images.append(image)
         return images
 
     @cache()
@@ -473,7 +483,10 @@ class SubscribeStarExtractor(Extractor):
         if post_title := title_element.find(["h1", "h2", "h3"]):
             post_title = post_title.text.strip()
         else:
-            post_title = ""
+            post_title = None
+
+        if title_element:
+            content = title_element.text.strip()
 
         tags = []
         if tag_element := html.find("div", class_="post_tags"):
@@ -518,6 +531,7 @@ class SubscribeStarExtractor(Extractor):
             ).next.get("data-user-id"),
             collection_id=collection_id,
             collection_name=collection_name,
+            content=content,
             date=date,
             title=post_title,
             post_id=post_id,
@@ -595,13 +609,10 @@ class SubscribeStarExtractor(Extractor):
         yield Message.Directory, "", data
         image_path = Path(data["_gdl_path"].directory)
 
-        _preview: bool | int = self.post_config.get("previews")
-        if post_data.previews:
-            data["type"] = "preview"
-            yield Message.Directory, "", data
-            preview_path = Path(data["_gdl_path"].directory)
-        else:
-            preview_path = image_path
+        data["type"] = "video"
+        data["extension"] = "mp4"
+        yield Message.Directory, "", data
+        video_path = Path(data["_gdl_path"].directory)
 
         # Webpage Files
         data["extension"] = "html"
@@ -619,7 +630,7 @@ class SubscribeStarExtractor(Extractor):
             avatar_path=avatar_path.relative_to(post_path, walk_up=True),
             cover_path=cover_path.relative_to(post_path, walk_up=True),
             image_path=image_path.relative_to(post_path, walk_up=True),
-            preview_path=preview_path.relative_to(post_path, walk_up=True),
+            video_path=video_path.relative_to(post_path, walk_up=True),
             vars_path=vars_path.relative_to(post_path, walk_up=True),
             images=util.json_dumps(images),
             avatars=util.json_dumps(avatars),
@@ -867,8 +878,8 @@ JOURNAL_SIDEBAR_TEMPLATE_HTML = """
 HTML_VAR_TEMPLATE = """text:
 let config = {{
     post_id: {post_id},
-    preview_path: "{preview_path}",
     image_path: "{image_path}",
+    video_path: "{video_path}",
     avatar_path: "{avatar_path}",
     cover_path: "{cover_path}"
 }}
