@@ -9,6 +9,7 @@
 """Extractors for https://www.subscribestar.com/"""
 
 import datetime
+import functools
 import inspect
 import os
 from pathlib import Path
@@ -653,7 +654,7 @@ class SubscribeStarExtractor(Extractor):
         else:
             return None
 
-    @cache()
+    @functools.cache
     def _get_profile_header(self, author: str):
         if header := self.soup.find("div", class_="profile_main_info"):
             return header
