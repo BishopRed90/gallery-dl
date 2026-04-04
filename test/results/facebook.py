@@ -128,6 +128,25 @@ __tests__ = (
 },
 
 {
+    "#url"     : "https://www.facebook.com/sua.banhmi.370/avatar",
+    "#comment" : "no 'profilePhoto' and profile photo page (#9347)",
+    "#class"   : facebook.FacebookAvatarExtractor,
+    "#pattern" : "https://scontent-.+.xx.fbcdn.net/.+",
+
+    "count"     : 1,
+    "extension" : "jpg",
+    "filename"  : "475800555_971547608250639_1909157744784342701_n",
+    "id"        : "983431630395570",
+    "set_id"    : "",
+    "title"     : "Profile pictures",
+    "type"      : "avatar",
+    "url"       : str,
+    "user_id"   : "100061862277212",
+    "user_pfbid": "pfbid0287MaQCX1Vp5ob73Dm6fAQWbKSu2aaCWf4ceydTGKJQEdMHXoVB1x5d6WZy5kth74l",
+    "username"  : "sua.banhmi.370",
+},
+
+{
     "#url"     : "https://www.facebook.com/media/set/?set=a.10152716010956729&type=3",
     "#class"   : facebook.FacebookSetExtractor,
     "#count"   : 6,
@@ -164,6 +183,27 @@ __tests__ = (
     "user_id"   : "100004378810826",
     "user_pfbid": r"re:pfbid\w{64}",
     "username"  : "Angel Nava Santiago",
+},
+
+{
+    "#url"     : "https://www.facebook.com/permalink.php?story_fbid=pfbid02P6zhg3UN71iAM1kiprstNfZuArXc83n5n1X842kPbsyQU6BdAUacgNsHw3LkmKasl&id=61558212601742",
+    "#comment" : "'/permalink.php' post URL (#9352)",
+    "#class"   : facebook.FacebookSetExtractor,
+    "#range"   : "1-3",
+    "#pattern" : r"https://scontent-.*.xx.fbcdn.net/v/.+",
+
+    "caption"       : "",
+    "date"          : "dt:2026-03-20 07:01:13",
+    "extension"     : "jpg",
+    "filename"      : str,
+    "first_photo_id": "122225439782273753",
+    "followups_ids" : [],
+    "id"            : r"re:12\d+",
+    "set_id"        : "pcb.pfbid02P6zhg3UN71iAM1kiprstNfZuArXc83n5n1X842kPbsyQU6BdAUacgNsHw3LkmKasl",
+    "title"         : "Photos from 金城漫與畫's post",
+    "user_id"       : "61558212601742",
+    "user_pfbid"    : "",
+    "username"      : "金城漫與畫",
 },
 
 {

@@ -2289,6 +2289,7 @@ Description
 Available Types
     * ``image``
     * ``video``
+    * ``cover``
     * ``download``
     * ``gallery``
 
@@ -3771,9 +3772,14 @@ Note
 extractor.instagram.previews
 ----------------------------
 Type
-    ``bool``
+    * ``bool``
+    * ``string``
+    * ``list`` of ``strings``
 Default
     ``false``
+Example
+    * ``"video"``
+    * ``["audio", "video"]``
 Description
     Download video previews and audio covers.
 
@@ -6370,11 +6376,31 @@ Description
 extractor.twitter.articles
 --------------------------
 Type
-    ``bool``
+    * ``bool``
+    * ``string``
+    * ``list`` of ``strings``
 Default
     ``true``
+Example
+    ``["media", "document", "metadata"]``
 Description
-    Download media embedded in articles.
+    Process `article` Tweets.
+
+    It is possible to select which files to download
+    and what article metadata to extract
+    by specifying a list of targets:
+
+    ``cover``
+        Download article cover images
+    ``media``
+        Download article media files
+    ``html``
+        Extract article content as ``html`` metadata
+    ``metadata`` | ``meta``
+        Extract ``article`` metadata
+        (``id``, ``title``, ``date``, ``date_updated``)
+    ``document`` | ``doc``
+        Download article contents as HTML document
 
 
 extractor.twitter.cards
@@ -6609,11 +6635,12 @@ Description
     Extract additional metadata for user accounts (``author``, ``user``)
 
     * ``based_in``
+    * ``friends_mutual``
     * ``location_accurate``
     * ``name_changes``
     * ``source``
 Note
-    This requires 1 additional HTTP request per user.
+    This requires 2 additional HTTP request per user.
 
 
 extractor.twitter.pinned

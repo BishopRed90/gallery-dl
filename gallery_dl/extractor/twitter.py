@@ -36,7 +36,6 @@ class TwitterExtractor(Extractor):
     def _init(self):
         self.unavailable = self.config("unavailable", False)
         self.textonly = self.config("text-tweets", False)
-        self.articles = self.config("articles", True)
         self.retweets = self.config("retweets", False)
         self.replies = self.config("replies", True)
         self.twitpic = self.config("twitpic", False)
@@ -54,6 +53,18 @@ class TwitterExtractor(Extractor):
             self._transform_community = \
                 self._transform_tweet = \
                 self._transform_user = util.identity
+
+        self.articles = articles = self.config("articles", True)
+        if articles:
+            if isinstance(articles, str):
+                articles = articles.split(",")
+            elif not isinstance(articles, (list, tuple)):
+                articles = {"meta", "cover", "media"}
+            self._article_doc = ("doc" in articles or "document" in articles)
+            self._article_html = ("html" in articles)
+            self._article_meta = ("meta" in articles or "metadata" in articles)
+            self._article_cover = ("cover" in articles)
+            self._article_media = ("media" in articles)
 
         self.api = TwitterAPI(self)
         self._cursor = None
@@ -169,7 +180,7 @@ class TwitterExtractor(Extractor):
             except Exception as exc:
                 self.log.traceback(exc)
                 self.log.warning(
-                    "%s: Error while extracting article files (%s: %s)",
+                    "%s: Error while processing article data (%s: %s)",
                     data["id_str"], exc.__class__.__name__, exc)
 
         if self.twitpic:
@@ -252,7 +263,7 @@ class TwitterExtractor(Extractor):
                 url = media["media_url_https"]
                 if url[-4] == ".":
                     base, _, fmt = url.rpartition(".")
-                    base += "?format=" + fmt + "&name="
+                    base = f"{base}?format={fmt}&name="
                 else:
                     base = url.rpartition("=")[0] + "="
                 file = text.nameext_from_url(url, {
@@ -349,28 +360,57 @@ class TwitterExtractor(Extractor):
 
     def _extract_article(self, tweet, files):
         article = tweet["article"]["article_results"]["result"]
-
-        if media := article.get("cover_media"):
-            info = media["media_info"]
+        if self._article_meta:
+            tweet["article"] = {
+                "id": article.get("rest_id"),
+                "title": article.get("title"),
+                "date": self.parse_timestamp(
+                    (m := article.get("metadata")) and
+                    m.get("first_published_at_secs")),
+                "date_updated": self.parse_timestamp(
+                    (m := article.get("lifecycle_state")) and
+                    m.get("modified_at_secs")),
+            }
+        if self._article_html:
+            html = self.utils("article").to_html(article)
+            if "article" not in tweet:
+                tweet["article"] = {}
+            tweet["article"]["html"] = "".join(html)
+        else:
+            html = None
+        if self._article_doc:
+            doc = self.utils("article").to_document(article, html)
             files.append({
-                "media_id" : media["media_id"],
-                "media_key": media["media_key"],
-                "url"      : info["original_img_url"],
-                "width"    : info["original_img_width"],
-                "height"   : info["original_img_height"],
-                "type"     : "article:cover",
+                "url"      : "text:" + "".join(doc),
+                "type"     : "article:html",
+                "extension": "html",
             })
+        if self._article_cover:
+            if media := article.get("cover_media"):
+                files.append(self._extract_article_media(media, "cover"))
+        if self._article_media:
+            for media in article["media_entities"]:
+                files.append(self._extract_article_media(media, "image"))
 
-        for media in article["media_entities"]:
-            info = media["media_info"]
-            files.append({
-                "media_id" : media["media_id"],
-                "media_key": media["media_key"],
-                "url"      : info["original_img_url"],
-                "width"    : info["original_img_width"],
-                "height"   : info["original_img_height"],
-                "type"     : "article:cover",
-            })
+    def _extract_article_media(self, media, type):
+        info = media["media_info"]
+        url = info["original_img_url"]
+
+        if url[-4] == ".":
+            base, _, fmt = url.rpartition(".")
+            base = f"{base}?format={fmt}&name="
+        else:
+            base = url.rpartition("=")[0] + "="
+
+        return {
+            "url"      : base + self._size_image,
+            "_fallback": self._image_fallback(base),
+            "width"    : info["original_img_width"],
+            "height"   : info["original_img_height"],
+            "media_id" : media["media_id"],
+            "media_key": media["media_key"],
+            "type"     : "article:" + type,
+        }
 
     def _extract_twitpic(self, tweet, files):
         urls = {}
@@ -503,6 +543,8 @@ class TwitterExtractor(Extractor):
             except KeyError:
                 self.log.debug("Unable to extract 'birdwatch' note from %s",
                                tweet["birdwatch_pivot"])
+        if "article" in tweet:
+            tdata["article"] = tweet["article"]
         if "in_reply_to_screen_name" in legacy:
             tdata["reply_to"] = legacy["in_reply_to_screen_name"]
         if "quoted_by" in legacy:
@@ -581,7 +623,7 @@ class TwitterExtractor(Extractor):
 
         lget = legacy.get
         if lget("withheld_scope"):
-            self.log.warning("'%s'", lget("description"))
+            self.log.warning("u%s: '%s'", uid, lget("description"))
 
         self._user_cache[uid] = udata = {
             "id"              : text.parse_int(uid),
@@ -624,14 +666,22 @@ class TwitterExtractor(Extractor):
                 udata["url"] = url.get("expanded_url") or url.get("url")
         udata["description"] = descr
 
-        if self.config("metadata-user", False) and (about := self.cache(
-                self.api.user_about_account, udata["name"]).get(
-                "about_profile")):
-            udata["source"] = about.get("source")
-            udata["based_in"] = about.get("account_based_in")
-            udata["location_accurate"] = about.get("location_accurate")
-            udata["name_changes"] = (d := about.get(
-                "username_changes")) and d.get("count") or 0
+        if self.config("metadata-user", False):
+            try:
+                if (about := self.cache(self.api.user_about_account,
+                                        udata["name"]).get("about_profile")):
+                    udata["source"] = about.get("source")
+                    udata["based_in"] = about.get("account_based_in")
+                    udata["location_accurate"] = about.get("location_accurate")
+                    udata["name_changes"] = (d := about.get(
+                        "username_changes")) and d.get("count") or 0
+                udata["friends_mutual"] = self.api.friends_following_list(
+                    uid).get("total_count")
+            except Exception as exc:
+                self.traceback(exc)
+                self.log.warning("u%s: Failed to extract extended user "
+                                 "metadata (%s: %s)",
+                                 uid, exc.__class__.__name__, exc)
 
         return udata
 
@@ -1692,6 +1742,28 @@ class TwitterAPI():
         }
         return self._pagination_users(
             endpoint, variables, ("list", "members_timeline", "timeline"))
+
+    def friends_following_list(self, user_id):
+        endpoint = "/1.1/friends/following/list.json"
+        params = {
+            "include_profile_interstitial_type": "1",
+            "include_blocking": "1",
+            "include_blocked_by": "1",
+            "include_followed_by": "1",
+            "include_want_retweets": "1",
+            "include_mute_edge": "1",
+            "include_can_dm": "1",
+            "include_can_media_tag": "1",
+            "include_ext_is_blue_verified": "1",
+            "include_ext_verified_type": "1",
+            "include_ext_profile_image_shape": "1",
+            "skip_status": "1",
+            "cursor": "-1",
+            "user_id": user_id,
+            "count": "3",
+            "with_total_count": "true",
+        }
+        return self._call(endpoint, params)
 
     def notifications_devicefollow(self):
         endpoint = "/2/notifications/device_follow.json"
