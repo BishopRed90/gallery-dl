@@ -1,3 +1,18 @@
-[build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+[project]
+name = "gallery-dl"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "gdl-functions[onepassword,rapidocr]",
+    "pydantic>=2.12.5",
+    "pyyaml>=6.0.3",
+    "requests>=2.33.0",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.uv.sources]
+gdl-functions = { path = "../gdl_functions", editable = true }

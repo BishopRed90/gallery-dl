@@ -68,8 +68,10 @@ class DiscordExtractor(Extractor):
                 self.server_channels_metadata[message["channel_id"]])
             message_metadata.update({
                 "author": message["author"]["username"],
+                "author_nick": message["author"]["global_name"],
                 "author_id": message["author"]["id"],
                 "author_files": [],
+                "thread_name": message.get("thread", {}).get("name"),
                 "message": self.extract_message_text(message),
                 "message_id": message["id"],
                 "date": self.parse_datetime_iso(message["timestamp"]),
@@ -77,8 +79,8 @@ class DiscordExtractor(Extractor):
             })
 
             for icon_type, icon_path in (
-                ("avatar", "avatars"),
-                ("banner", "banners")
+                    ("avatar", "avatars"),
+                    ("banner", "banners")
             ):
                 if message["author"].get(icon_type):
                     message_metadata["author_files"].append({
@@ -211,9 +213,9 @@ class DiscordExtractor(Extractor):
 
     def parse_server(self, server):
         self.server_metadata = {
-            "server"   : server["name"],
+            "server": server["name"],
             "server_id": server["id"],
-            "owner_id" : server["owner_id"],
+            "owner_id": server["owner_id"],
             "server_files": self.collect_server_assets(server),
         }
 
@@ -226,8 +228,8 @@ class DiscordExtractor(Extractor):
                     **asset,
                     "url": (f"https://cdn.discordapp.com/{asset_type}/"
                             f"{asset['id']}.png?size=4096"),
-                    "label"    : asset_type,
-                    "filename" : f"{asset['name']} ({asset['id']})",
+                    "label": asset_type,
+                    "filename": f"{asset['name']} ({asset['id']})",
                     "extension": "png",
                 }
                 for asset in assets
@@ -237,14 +239,14 @@ class DiscordExtractor(Extractor):
                 {
                     "url": (f"https://cdn.discordapp.com/{asset_path}/"
                             f"{server['id']}/{asset_id}.png?size=4096"),
-                    "id"       : f"{server['id']}/{asset_id}",
-                    "label"    : "",
-                    "name"     : asset_type,
-                    "filename" : asset_type,
+                    "id": f"{server['id']}/{asset_id}",
+                    "label": "",
+                    "name": asset_type,
+                    "filename": asset_type,
                     "extension": "png",
                 }
                 for asset_type, asset_path in (
-                    ("icon"  , "icons"),
+                    ("icon", "icons"),
                     ("banner", "banners"),
                     ("splash", "splashes"),
                     ("discovery_splash", "discovery-splashes")
@@ -334,7 +336,7 @@ class DiscordServerSearchExtractor(DiscordExtractor):
         params = {
             **text.parse_query_list(query, {
                 "from", "in", "has", "mentions", "author_id", "channel_id"}),
-            "sort_by"   : "timestamp",
+            "sort_by": "timestamp",
             "sort_order": "desc",
         }
         if "from" in params:
